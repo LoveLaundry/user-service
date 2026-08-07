@@ -1,11 +1,18 @@
-from fastapi import FastAPI, Depends, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from typing import Union
 
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+
 from .config import DB_TYPE, DatabaseType
-from .repository import QuotationRepository
-from .repository_factory import get_repository, close_connections
-from .schemas import QuotationCreate, QuotationUpdate, QuotationResponse
+from .repository import UserRepository
+from .repository_factory import close_connections, get_repository
+from .schemas import (
+    UserCreate,
+    UserPasswordUpdate,
+    UserResponse,
+    UserStatusUpdate,
+    UserUpdate,
+)
 
 app = FastAPI(title="User Service", version="1.0.0")
 
@@ -17,16 +24,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize database schema for PostgreSQL/SQLite
 if DB_TYPE in (DatabaseType.POSTGRESQL, DatabaseType.SQLITE):
     from .database import Base, engine
+
     if engine:
         Base.metadata.create_all(bind=engine)
 
 
 @app.on_event("shutdown")
 def shutdown_event():
-    """Close database connections on shutdown"""
     close_connections()
 
 
@@ -35,83 +41,161 @@ def root():
     return {
         "message": "User Service API",
         "version": "1.0.0",
-        "database": DB_TYPE.value
+        "database": DB_TYPE.value,
     }
 
 
-@app.get("/quotations", response_model=list[QuotationResponse])
-def get_all_quotations(repo: QuotationRepository = Depends(get_repository)):
-    quotations = repo.get_all()
-    return quotations
+@app.get("/users", response_model=list[UserResponse])
+def get_all_users(repo: UserRepository = Depends(get_repository)):
+    return repo.get_all()
 
 
-@app.get("/quotations/{quotation_id}", response_model=QuotationResponse)
-def get_quotation(quotation_id: Union[int, str], repo: QuotationRepository = Depends(get_repository)):
-    # MongoDB uses string IDs, PostgreSQL uses integers
-    if DB_TYPE == DatabaseType.MONGODB:
-        quotation = repo.get_by_id(str(quotation_id))
-    else:
-        quotation = repo.get_by_id(int(quotation_id))
-    
-    if not quotation:
-        raise HTTPException(status_code=404, detail="Quotation not found")
-    return quotation
-
-
-@app.post("/quotations", response_model=QuotationResponse, status_code=201)
-def create_quotation(payload: QuotationCreate, repo: QuotationRepository = Depends(get_repository)):
-    line_items_data = [item.model_dump() for item in payload.line_items]
-    
-    quotation_data = {
-        "client_name": payload.client_name,
-        "quotation_title": payload.quotation_title,
-        "line_items": line_items_data,
-        "status": payload.status,
-    }
-    
-    new_quotation = repo.create(quotation_data)
-    return new_quotation
-
-
-@app.put("/quotations/{quotation_id}", response_model=QuotationResponse)
-def update_quotation(
-    quotation_id: Union[int, str],
-    payload: QuotationUpdate,
-    repo: QuotationRepository = Depends(get_repository),
+@app.get("/users/{user_id}", response_model=UserResponse)
+def get_user(
+    user_id: Union[int, str],
+    repo: UserRepository = Depends(get_repository),
 ):
-    # Convert quotation_id based on database type
     if DB_TYPE == DatabaseType.MONGODB:
-        quotation_id = str(quotation_id)
+        user = repo.get_by_id(str(user_id))
     else:
-        quotation_id = int(quotation_id)
-    
-    update_data = payload.model_dump(exclude_unset=True)
-    
-    if "line_items" in update_data and update_data["line_items"]:
-        update_data["line_items"] = [
-            item.model_dump() if hasattr(item, "model_dump") else item
-            for item in update_data["line_items"]
-        ]
-    
-    updated_quotation = repo.update(quotation_id, update_data)
-    
-    if not updated_quotation:
-        raise HTTPException(status_code=404, detail="Quotation not found")
-    
-    return updated_quotation
+        user = repo.get_by_id(int(user_id))
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return user
 
 
-@app.delete("/quotations/{quotation_id}")
-def delete_quotation(quotation_id: Union[int, str], repo: QuotationRepository = Depends(get_repository)):
-    # Convert quotation_id based on database type
+@app.get("/users/auth/{auth_id}", response_model=UserResponse)
+def get_user_by_auth_id(
+    auth_id: str,
+    repo: UserRepository = Depends(get_repository),
+):
+    user = repo.get_by_auth_id(auth_id)
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return user
+
+
+@app.get("/users/email/{email}", response_model=UserResponse)
+def get_user_by_email(
+    email: str,
+    repo: UserRepository = Depends(get_repository),
+):
+    user = repo.get_by_email(email)
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return user
+
+
+@app.get("/users/employee/{employee_id}", response_model=UserResponse)
+def get_user_by_employee_id(
+    employee_id: str,
+    repo: UserRepository = Depends(get_repository),
+):
+    user = repo.get_by_employee_id(employee_id)
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return user
+
+
+@app.post("/users", response_model=UserResponse, status_code=201)
+def create_user(
+    payload: UserCreate,
+    repo: UserRepository = Depends(get_repository),
+):
+    if repo.exists_by_auth_id(payload.auth_id):
+        raise HTTPException(status_code=400, detail="Auth ID already exists")
+
+    if payload.email and repo.exists_by_email(payload.email):
+        raise HTTPException(status_code=400, detail="Email already exists")
+
+    if payload.employee_id and repo.exists_by_employee_id(payload.employee_id):
+        raise HTTPException(status_code=400, detail="Employee ID already exists")
+
+    return repo.create(payload.model_dump())
+
+
+@app.put("/users/{user_id}", response_model=UserResponse)
+def update_user(
+    user_id: Union[int, str],
+    payload: UserUpdate,
+    repo: UserRepository = Depends(get_repository),
+):
     if DB_TYPE == DatabaseType.MONGODB:
-        quotation_id = str(quotation_id)
+        user_id = str(user_id)
     else:
-        quotation_id = int(quotation_id)
-    
-    success = repo.delete(quotation_id)
-    
-    if not success:
-        raise HTTPException(status_code=404, detail="Quotation not found")
-    
-    return {"message": "Quotation deleted successfully"}
+        user_id = int(user_id)
+
+    user = repo.update(
+        user_id,
+        payload.model_dump(exclude_unset=True),
+    )
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return user
+
+
+@app.patch("/users/{user_id}/password")
+def update_password(
+    user_id: Union[int, str],
+    payload: UserPasswordUpdate,
+    repo: UserRepository = Depends(get_repository),
+):
+    if DB_TYPE == DatabaseType.MONGODB:
+        user_id = str(user_id)
+    else:
+        user_id = int(user_id)
+
+    if not repo.update_password(user_id, payload.password):
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {"message": "Password updated successfully"}
+
+
+@app.patch("/users/{user_id}/status")
+def update_status(
+    user_id: Union[int, str],
+    payload: UserStatusUpdate,
+    repo: UserRepository = Depends(get_repository),
+):
+    if DB_TYPE == DatabaseType.MONGODB:
+        user_id = str(user_id)
+    else:
+        user_id = int(user_id)
+
+    if not repo.update_status(user_id, payload.status):
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {"message": "Status updated successfully"}
+
+
+@app.delete("/users/{user_id}")
+def delete_user(
+    user_id: Union[int, str],
+    repo: UserRepository = Depends(get_repository),
+):
+    if DB_TYPE == DatabaseType.MONGODB:
+        user_id = str(user_id)
+    else:
+        user_id = int(user_id)
+
+    if not repo.delete(user_id):
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {"message": "User deleted successfully"}
+
+
+@app.get("/users/count")
+def count_users(
+    repo: UserRepository = Depends(get_repository),
+):
+    return {"count": repo.count()}

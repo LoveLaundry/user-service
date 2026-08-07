@@ -1,39 +1,58 @@
 from datetime import datetime
 from typing import Union
-from pydantic import BaseModel, Field, field_serializer
+
+from pydantic import BaseModel, EmailStr, Field, field_serializer
 
 
-class LineItemSchema(BaseModel):
-    item_name: str
-    category: str | None = None
-    unit_price: float
-    notes: str | None = None
+class UserCreate(BaseModel):
+    user_name: str
+    bio_data: str | None = None
+    user_dp: str | None = None
+    mobile_number: str | None = None
+    email: EmailStr | None = None
+    role_id: str
+    employee_id: str | None = None
+    auth_id: str
+    password: str
+    status: str = "unset"
 
 
-class QuotationCreate(BaseModel):
-    client_name: str
-    quotation_title: str | None = None
-    line_items: list[LineItemSchema] = Field(default_factory=list)
-    status: str = "draft"
-
-
-class QuotationUpdate(BaseModel):
-    client_name: str | None = None
-    quotation_title: str | None = None
-    line_items: list[LineItemSchema] | None = None
+class UserUpdate(BaseModel):
+    user_name: str | None = None
+    bio_data: str | None = None
+    user_dp: str | None = None
+    mobile_number: str | None = None
+    email: EmailStr | None = None
+    role_id: str | None = None
+    employee_id: str | None = None
+    auth_id: str | None = None
+    password: str | None = None
     status: str | None = None
 
 
-class QuotationResponse(BaseModel):
-    id: Union[int, str]  # MongoDB uses string IDs, PostgreSQL uses integer IDs
-    client_name: str
-    quotation_title: str | None
-    line_items: list[dict]
+class UserPasswordUpdate(BaseModel):
+    password: str
+
+
+class UserStatusUpdate(BaseModel):
+    status: str
+
+
+class UserResponse(BaseModel):
+    id: Union[int, str]
+    user_name: str
+    bio_data: str | None = None
+    user_dp: str | None = None
+    mobile_number: str | None = None
+    email: EmailStr | None = None
+    role_id: str
+    employee_id: str | None = None
+    auth_id: str
     status: str
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
-    @field_serializer('created_at', 'updated_at')
+    @field_serializer("created_at", "updated_at")
     def serialize_datetime(self, value: datetime | None) -> str | None:
         if value is None:
             return None

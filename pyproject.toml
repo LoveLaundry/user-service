@@ -7,7 +7,14 @@ authors = [
     { name = "DulshanSiriwardhana", email = "dulshansiriwardhanaofficial@gmail.com" }
 ]
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "fastapi[standard]>=0.141.1",
+    "psycopg[binary]>=3.3.4",
+    "pydantic[email]>=2.13.4",
+    "pymongo>=4.17.0",
+    "python-dotenv>=1.2.2",
+    "sqlalchemy>=2.0.51",
+]
 
 [project.scripts]
 user-service = "user_service:main"
