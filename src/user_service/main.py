@@ -225,20 +225,16 @@ def login(payload: LoginPayload, repo: UserRepository = Depends(get_repository))
         except Exception:
             user = None
 
-    if not user:
-        raise HTTPException(status_code=400, detail="Invalid username or password")
-
-    if hasattr(repo, "collection"):
-        raw_user = repo.collection.find_one({"auth_id": user["auth_id"]})
-    else:
-        raw_user = None
-
-    if not raw_user or "password" not in raw_user:
+    if not user or "password" not in user:
         raise HTTPException(status_code=400, detail="Invalid username or password")
 
     pw_bytes = payload.password.encode('utf-8')
-    hash_bytes = raw_user["password"].encode('utf-8')
-    if not bcrypt.checkpw(pw_bytes, hash_bytes):
+    hash_bytes = user["password"].encode('utf-8')
+
+    try:
+        if not bcrypt.checkpw(pw_bytes, hash_bytes):
+            raise ValueError("Hash mismatch")
+    except ValueError:
         raise HTTPException(status_code=400, detail="Invalid username or password")
 
     token_data = {
@@ -248,11 +244,15 @@ def login(payload: LoginPayload, repo: UserRepository = Depends(get_repository))
         "role": user["role_id"],
         "status": user["status"]
     }
+    
+    # Strip sensitive fields from user response
+    user_response = {k: v for k, v in user.items() if k != "password"}
+    
     token = create_access_token(token_data)
     return {
         "access_token": token,
         "token_type": "bearer",
-        "user": user
+        "user": user_response
     }
 
 @app.get("/auth/status")
