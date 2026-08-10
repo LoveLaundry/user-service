@@ -1,14 +1,14 @@
 [project]
 name = "user-service"
 version = "0.1.0"
-description = "Add your description here"
+description = "User Service API"
 readme = "README.md"
 authors = [
     { name = "DulshanSiriwardhana", email = "dulshansiriwardhanaofficial@gmail.com" }
 ]
-requires-python = ">=3.14,<3.16"
+requires-python = ">=3.11"
 dependencies = [
-    "fastapi[standard]>=0.141.1",
+    "fastapi>=0.115.0",
     "psycopg[binary]>=3.3.4",
     "pydantic[email]>=2.13.4",
     "pymongo[srv]>=4.17.0",
@@ -19,14 +19,3 @@ dependencies = [
     "bcrypt>=4.0.0",
     "python-multipart>=0.0.9",
 ]
-
-
-[project.scripts]
-user-service = "user_service:main"
-
-[build-system]
-requires = ["uv_build>=0.12.1,<0.13.0"]
-build-backend = "uv_build"
-
-[tool.vercel]
-entrypoint = "src.user_service.main:app"
