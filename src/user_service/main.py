@@ -199,3 +199,55 @@ def count_users(
     repo: UserRepository = Depends(get_repository),
 ):
     return {"count": repo.count()}
+
+
+from pydantic import BaseModel
+import bcrypt
+from .auth_helper import create_access_token, get_current_user
+
+class LoginPayload(BaseModel):
+    username: str
+    password: str
+
+@app.post("/auth/login")
+def login(payload: LoginPayload, repo: UserRepository = Depends(get_repository)):
+    user = repo.get_by_auth_id(payload.username)
+    if not user:
+        try:
+            user = repo.get_by_email(payload.username)
+        except Exception:
+            user = None
+
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid username or password")
+
+    if hasattr(repo, "collection"):
+        raw_user = repo.collection.find_one({"auth_id": user["auth_id"]})
+    else:
+        raw_user = None
+
+    if not raw_user or "password" not in raw_user:
+        raise HTTPException(status_code=400, detail="Invalid username or password")
+
+    pw_bytes = payload.password.encode('utf-8')
+    hash_bytes = raw_user["password"].encode('utf-8')
+    if not bcrypt.checkpw(pw_bytes, hash_bytes):
+        raise HTTPException(status_code=400, detail="Invalid username or password")
+
+    token_data = {
+        "user_id": user["id"],
+        "auth_id": user["auth_id"],
+        "user_name": user["user_name"],
+        "role": user["role_id"],
+        "status": user["status"]
+    }
+    token = create_access_token(token_data)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": user
+    }
+
+@app.get("/auth/status")
+def auth_status(current_user: dict = Depends(get_current_user)):
+    return current_user

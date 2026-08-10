@@ -1,7 +1,6 @@
 from datetime import datetime
 from typing import Union
-
-from pydantic import BaseModel, EmailStr, Field, field_serializer
+from pydantic import BaseModel, EmailStr, field_serializer
 
 
 class UserCreate(BaseModel):
@@ -15,6 +14,8 @@ class UserCreate(BaseModel):
     auth_id: str
     password: str
     status: str = "unset"
+    public_key: str | None = None
+    key_version: int | None = 1
 
 
 class UserUpdate(BaseModel):
@@ -28,6 +29,8 @@ class UserUpdate(BaseModel):
     auth_id: str | None = None
     password: str | None = None
     status: str | None = None
+    public_key: str | None = None
+    key_version: int | None = None
 
 
 class UserPasswordUpdate(BaseModel):
@@ -44,11 +47,13 @@ class UserResponse(BaseModel):
     bio_data: str | None = None
     user_dp: str | None = None
     mobile_number: str | None = None
-    email: EmailStr | None = None
+    email: str | None = None
     role_id: str
     employee_id: str | None = None
     auth_id: str
     status: str
+    public_key: str | None = None
+    key_version: int | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

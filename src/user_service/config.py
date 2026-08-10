@@ -34,13 +34,11 @@ def detect_database_type(database_url: str) -> DatabaseType:
         raise ValueError(f"Unsupported database URL format: {database_url}")
 
 
-# Load configuration
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL environment variable is required")
 
 DB_TYPE = detect_database_type(DATABASE_URL)
 
-# MongoDB specific configuration
 MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME", "user_db")
 MONGODB_COLLECTION = os.getenv("MONGODB_COLLECTION", "users")

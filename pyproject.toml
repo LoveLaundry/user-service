@@ -14,7 +14,12 @@ dependencies = [
     "pymongo>=4.17.0",
     "python-dotenv>=1.2.2",
     "sqlalchemy>=2.0.51",
+    "cryptography>=42.0.0",
+    "pyjwt>=2.7.0",
+    "bcrypt>=4.0.0",
+    "python-multipart>=0.0.9",
 ]
+
 
 [project.scripts]
 user-service = "user_service:main"
