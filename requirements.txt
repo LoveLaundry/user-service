@@ -1,0 +1,11 @@
+fastapi[standard]>=0.141.1
+psycopg[binary]>=3.3.4
+pydantic[email]>=2.13.4
+pymongo[srv]>=4.17.0
+python-dotenv>=1.2.2
+sqlalchemy>=2.0.51
+cryptography>=42.0.0
+pyjwt>=2.7.0
+bcrypt>=4.0.0
+python-multipart>=0.0.9
+uvicorn>=0.30.0
