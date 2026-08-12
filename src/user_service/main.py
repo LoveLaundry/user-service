@@ -1,6 +1,13 @@
 from typing import Union
 
+<<<<<<< HEAD
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form
+=======
+from pydantic import BaseModel
+import bcrypt
+
+from fastapi import Depends, FastAPI, HTTPException
+>>>>>>> 2035f1a9ad435fe5237c981b4371a5b21f60ffec
 from fastapi.middleware.cors import CORSMiddleware
 import base64
 from pathlib import Path
@@ -8,6 +15,7 @@ from pathlib import Path
 from .config import DB_TYPE, DatabaseType
 from .repository import UserRepository
 from .repository_factory import close_connections, get_repository
+from .auth_helper import create_access_token, get_current_user, require_role
 from .schemas import (
     UserCreate,
     UserPasswordUpdate,
@@ -28,17 +36,14 @@ app.add_middleware(
 
 @app.on_event("startup")
 def startup_event():
-    """Initialize database schema on startup"""
     if DB_TYPE in (DatabaseType.POSTGRESQL, DatabaseType.SQLITE):
         from .database import Base, engine
-
         if engine:
             Base.metadata.create_all(bind=engine)
 
 
 @app.on_event("shutdown")
 def shutdown_event():
-    """Close database connections on shutdown"""
     try:
         close_connections()
     except Exception:
@@ -54,12 +59,107 @@ def root():
     }
 
 
-@app.get("/users", response_model=list[UserResponse])
+# ── Auth routes (public) ────────────────────────────────────────────────────────
+
+class LoginPayload(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/auth/login")
+def login(payload: LoginPayload, repo: UserRepository = Depends(get_repository)):
+    user = repo.get_by_auth_id(payload.username)
+    if not user:
+        try:
+            user = repo.get_by_email(payload.username)
+        except Exception:
+            user = None
+
+    if not user or "password" not in user:
+        raise HTTPException(status_code=400, detail="Invalid username or password")
+
+    pw_bytes = payload.password.encode("utf-8")
+    hash_bytes = user["password"].encode("utf-8")
+
+    try:
+        if not bcrypt.checkpw(pw_bytes, hash_bytes):
+            raise ValueError("Hash mismatch")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid username or password")
+
+    role = str(user["role_id"]).upper()
+
+    token_data = {
+        "user_id": user["id"],
+        "auth_id": user["auth_id"],
+        "user_name": user["user_name"],
+        "role": role,
+        "status": user["status"],
+    }
+
+    user_response = {k: v for k, v in user.items() if k != "password"}
+    user_response["role_id"] = role
+
+    token = create_access_token(token_data)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": user_response,
+    }
+
+
+@app.get("/auth/status")
+def auth_status(current_user: dict = Depends(get_current_user)):
+    return current_user
+
+
+# ── User routes (admin only) ─────────────────────────────────────────────────────
+# IMPORTANT: Static paths MUST come before wildcard {user_id} paths.
+
+@app.get("/users", response_model=list[UserResponse], dependencies=[Depends(require_role(["ADMIN"]))])
 def get_all_users(repo: UserRepository = Depends(get_repository)):
     return repo.get_all()
 
 
-@app.get("/users/{user_id}", response_model=UserResponse)
+@app.get("/users/count", dependencies=[Depends(require_role(["ADMIN"]))])
+def count_users(repo: UserRepository = Depends(get_repository)):
+    return {"count": repo.count()}
+
+
+@app.get("/users/auth/{auth_id}", response_model=UserResponse, dependencies=[Depends(require_role(["ADMIN"]))])
+def get_user_by_auth_id(
+    auth_id: str,
+    repo: UserRepository = Depends(get_repository),
+):
+    user = repo.get_by_auth_id(auth_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+@app.get("/users/email/{email}", response_model=UserResponse, dependencies=[Depends(require_role(["ADMIN"]))])
+def get_user_by_email(
+    email: str,
+    repo: UserRepository = Depends(get_repository),
+):
+    user = repo.get_by_email(email)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+@app.get("/users/employee/{employee_id}", response_model=UserResponse, dependencies=[Depends(require_role(["ADMIN"]))])
+def get_user_by_employee_id(
+    employee_id: str,
+    repo: UserRepository = Depends(get_repository),
+):
+    user = repo.get_by_employee_id(employee_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+@app.get("/users/{user_id}", response_model=UserResponse, dependencies=[Depends(require_role(["ADMIN"]))])
 def get_user(
     user_id: Union[int, str],
     repo: UserRepository = Depends(get_repository),
@@ -71,50 +171,10 @@ def get_user(
 
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-
     return user
 
 
-@app.get("/users/auth/{auth_id}", response_model=UserResponse)
-def get_user_by_auth_id(
-    auth_id: str,
-    repo: UserRepository = Depends(get_repository),
-):
-    user = repo.get_by_auth_id(auth_id)
-
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    return user
-
-
-@app.get("/users/email/{email}", response_model=UserResponse)
-def get_user_by_email(
-    email: str,
-    repo: UserRepository = Depends(get_repository),
-):
-    user = repo.get_by_email(email)
-
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    return user
-
-
-@app.get("/users/employee/{employee_id}", response_model=UserResponse)
-def get_user_by_employee_id(
-    employee_id: str,
-    repo: UserRepository = Depends(get_repository),
-):
-    user = repo.get_by_employee_id(employee_id)
-
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    return user
-
-
-@app.post("/users", response_model=UserResponse, status_code=201)
+@app.post("/users", response_model=UserResponse, status_code=201, dependencies=[Depends(require_role(["ADMIN"]))])
 def create_user(
     payload: UserCreate,
     repo: UserRepository = Depends(get_repository),
@@ -131,7 +191,7 @@ def create_user(
     return repo.create(payload.model_dump())
 
 
-@app.put("/users/{user_id}", response_model=UserResponse)
+@app.put("/users/{user_id}", response_model=UserResponse, dependencies=[Depends(require_role(["ADMIN"]))])
 def update_user(
     user_id: Union[int, str],
     payload: UserUpdate,
@@ -142,18 +202,14 @@ def update_user(
     else:
         user_id = int(user_id)
 
-    user = repo.update(
-        user_id,
-        payload.model_dump(exclude_unset=True),
-    )
+    user = repo.update(user_id, payload.model_dump(exclude_unset=True))
 
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-
     return user
 
 
-@app.patch("/users/{user_id}/password")
+@app.patch("/users/{user_id}/password", dependencies=[Depends(require_role(["ADMIN"]))])
 def update_password(
     user_id: Union[int, str],
     payload: UserPasswordUpdate,
@@ -166,11 +222,10 @@ def update_password(
 
     if not repo.update_password(user_id, payload.password):
         raise HTTPException(status_code=404, detail="User not found")
-
     return {"message": "Password updated successfully"}
 
 
-@app.patch("/users/{user_id}/status")
+@app.patch("/users/{user_id}/status", dependencies=[Depends(require_role(["ADMIN"]))])
 def update_status(
     user_id: Union[int, str],
     payload: UserStatusUpdate,
@@ -183,7 +238,6 @@ def update_status(
 
     if not repo.update_status(user_id, payload.status):
         raise HTTPException(status_code=404, detail="User not found")
-
     return {"message": "Status updated successfully"}
 
 
@@ -247,7 +301,7 @@ async def update_profile(
     return user
 
 
-@app.delete("/users/{user_id}")
+@app.delete("/users/{user_id}", dependencies=[Depends(require_role(["ADMIN"]))])
 def delete_user(
     user_id: Union[int, str],
     repo: UserRepository = Depends(get_repository),
@@ -259,64 +313,4 @@ def delete_user(
 
     if not repo.delete(user_id):
         raise HTTPException(status_code=404, detail="User not found")
-
     return {"message": "User deleted successfully"}
-
-
-@app.get("/users/count")
-def count_users(
-    repo: UserRepository = Depends(get_repository),
-):
-    return {"count": repo.count()}
-
-
-from pydantic import BaseModel
-import bcrypt
-from .auth_helper import create_access_token, get_current_user
-
-class LoginPayload(BaseModel):
-    username: str
-    password: str
-
-@app.post("/auth/login")
-def login(payload: LoginPayload, repo: UserRepository = Depends(get_repository)):
-    user = repo.get_by_auth_id(payload.username)
-    if not user:
-        try:
-            user = repo.get_by_email(payload.username)
-        except Exception:
-            user = None
-
-    if not user or "password" not in user:
-        raise HTTPException(status_code=400, detail="Invalid username or password")
-
-    pw_bytes = payload.password.encode('utf-8')
-    hash_bytes = user["password"].encode('utf-8')
-
-    try:
-        if not bcrypt.checkpw(pw_bytes, hash_bytes):
-            raise ValueError("Hash mismatch")
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid username or password")
-
-    token_data = {
-        "user_id": user["id"],
-        "auth_id": user["auth_id"],
-        "user_name": user["user_name"],
-        "role": user["role_id"],
-        "status": user["status"]
-    }
-    
-    # Strip sensitive fields from user response
-    user_response = {k: v for k, v in user.items() if k != "password"}
-    
-    token = create_access_token(token_data)
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "user": user_response
-    }
-
-@app.get("/auth/status")
-def auth_status(current_user: dict = Depends(get_current_user)):
-    return current_user
