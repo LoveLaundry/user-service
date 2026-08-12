@@ -17,6 +17,10 @@ from .schemas import (
     UserStatusUpdate,
     UserUpdate,
 )
+from .database.main_db import ensure_indexes
+from .database.connection_manager import close_all
+from .routers.admin_database import router as admin_database_router
+from .services import synchronization_service
 
 app = FastAPI(title="User Service", version="1.0.0")
 
@@ -28,18 +32,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(admin_database_router)
+
+
 @app.on_event("startup")
 def startup_event():
     if DB_TYPE in (DatabaseType.POSTGRESQL, DatabaseType.SQLITE):
         from .database import Base, engine
         if engine:
             Base.metadata.create_all(bind=engine)
+    else:
+        ensure_indexes()
+        synchronization_service.start_worker()
 
 
 @app.on_event("shutdown")
 def shutdown_event():
     try:
+        synchronization_service.stop_worker()
+    except Exception:
+        pass
+    try:
         close_connections()
+    except Exception:
+        pass
+    try:
+        close_all()
     except Exception:
         pass
 

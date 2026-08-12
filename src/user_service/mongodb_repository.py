@@ -3,11 +3,12 @@ from typing import List, Optional, Dict, Any
 import bcrypt
 
 from bson import ObjectId
-from pymongo import MongoClient
 
-from .config import DATABASE_URL, MONGODB_DB_NAME
 from .repository import UserRepository
 from .crypto_helper import encrypt_dict, decrypt_dict, get_search_token
+from .database.main_db import users_collection
+from .repositories.main_repository import bump_version, enqueue_sync
+from .services.verification_service import attach_verification_to
 
 USERS_COLLECTION = "users"
 SENSITIVE_FIELDS = ["mobile_number", "email", "bio_data", "user_dp"]
@@ -15,9 +16,7 @@ SENSITIVE_FIELDS = ["mobile_number", "email", "bio_data", "user_dp"]
 
 class MongoDBUserRepository(UserRepository):
     def __init__(self):
-        self.client = MongoClient(DATABASE_URL)
-        self.db = self.client[MONGODB_DB_NAME]
-        self.collection = self.db[USERS_COLLECTION]
+        self.collection = users_collection
 
         self.collection.create_index("user_name")
         self.collection.create_index("auth_id", unique=True)
@@ -44,7 +43,8 @@ class MongoDBUserRepository(UserRepository):
         results = []
         for doc in documents:
             try:
-                results.append(self._serialize_document(doc))
+                serialized = self._serialize_document(doc)
+                results.append(attach_verification_to("user", doc["_id"], serialized))
             except ValueError:
                 pass
         return results
@@ -52,27 +52,42 @@ class MongoDBUserRepository(UserRepository):
     def get_by_id(self, user_id: str) -> Optional[Dict[str, Any]]:
         try:
             doc = self.collection.find_one({"_id": ObjectId(user_id)})
-            return self._serialize_document(doc)
+            if not doc:
+                return None
+            serialized = self._serialize_document(doc)
+            return attach_verification_to("user", doc["_id"], serialized)
         except Exception:
             return None
 
     def get_by_auth_id(self, auth_id: str) -> Optional[Dict[str, Any]]:
         doc = self.collection.find_one({"auth_id": auth_id})
-        return self._serialize_document(doc)
+        if not doc:
+            return None
+        serialized = self._serialize_document(doc)
+        return attach_verification_to("user", doc["_id"], serialized)
 
     def get_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         doc = self.collection.find_one({"email_search": get_search_token(email)})
-        return self._serialize_document(doc)
+        if not doc:
+            return None
+        serialized = self._serialize_document(doc)
+        return attach_verification_to("user", doc["_id"], serialized)
 
     def get_by_mobile_number(self, mobile_number: str) -> Optional[Dict[str, Any]]:
         doc = self.collection.find_one(
             {"mobile_number_search": get_search_token(mobile_number)}
         )
-        return self._serialize_document(doc)
+        if not doc:
+            return None
+        serialized = self._serialize_document(doc)
+        return attach_verification_to("user", doc["_id"], serialized)
 
     def get_by_employee_id(self, employee_id: str) -> Optional[Dict[str, Any]]:
         doc = self.collection.find_one({"employee_id": employee_id})
-        return self._serialize_document(doc)
+        if not doc:
+            return None
+        serialized = self._serialize_document(doc)
+        return attach_verification_to("user", doc["_id"], serialized)
 
     def create(self, user_data: Dict[str, Any]) -> Dict[str, Any]:
         now = datetime.utcnow()
@@ -106,7 +121,12 @@ class MongoDBUserRepository(UserRepository):
         result = self.collection.insert_one(encrypted_document)
         encrypted_document["_id"] = result.inserted_id
 
-        return self._serialize_document(encrypted_document)
+        # Main DB write succeeded -> bump version and enqueue replication
+        new_version = bump_version("user", result.inserted_id)
+        enqueue_sync("user", result.inserted_id, new_version)
+
+        serialized = self._serialize_document(encrypted_document)
+        return attach_verification_to("user", result.inserted_id, serialized)
 
     def update(
         self, user_id: str, update_data: Dict[str, Any]
@@ -141,7 +161,15 @@ class MongoDBUserRepository(UserRepository):
                 return_document=True,
             )
 
-            return self._serialize_document(result)
+            if not result:
+                return None
+
+            # Main DB write succeeded -> bump version and enqueue replication
+            new_version = bump_version("user", ObjectId(user_id))
+            enqueue_sync("user", ObjectId(user_id), new_version)
+
+            serialized = self._serialize_document(result)
+            return attach_verification_to("user", ObjectId(user_id), serialized)
         except Exception:
             return None
 
@@ -165,6 +193,9 @@ class MongoDBUserRepository(UserRepository):
                     }
                 },
             )
+            if result.modified_count > 0:
+                new_version = bump_version("user", ObjectId(user_id))
+                enqueue_sync("user", ObjectId(user_id), new_version)
             return result.modified_count > 0
         except Exception:
             return False
@@ -180,6 +211,9 @@ class MongoDBUserRepository(UserRepository):
                     }
                 },
             )
+            if result.modified_count > 0:
+                new_version = bump_version("user", ObjectId(user_id))
+                enqueue_sync("user", ObjectId(user_id), new_version)
             return result.modified_count > 0
         except Exception:
             return False
@@ -205,4 +239,4 @@ class MongoDBUserRepository(UserRepository):
         return self.collection.count_documents({})
 
     def close(self):
-        self.client.close()
+        pass
