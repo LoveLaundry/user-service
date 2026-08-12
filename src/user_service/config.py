@@ -71,7 +71,7 @@ def resolve_main_db() -> str:
 
 
 def resolve_secondary_uri() -> str:
-    return MONGODB_SECONDARY_URI or DATABASE_URL
+    return MONGODB_SECONDARY_URI or "mongodb://unconfigured"
 
 
 def resolve_secondary_db() -> str:
@@ -79,7 +79,7 @@ def resolve_secondary_db() -> str:
 
 
 def resolve_local_uri() -> str:
-    return MONGODB_LOCAL_URI or DATABASE_URL
+    return MONGODB_LOCAL_URI or "mongodb://unconfigured"
 
 
 def resolve_local_db() -> str:
