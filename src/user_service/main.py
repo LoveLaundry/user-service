@@ -23,10 +23,18 @@ from .routers.admin_database import router as admin_database_router
 from .services import synchronization_service
 
 
+import logging
 import os
 import sentry_sdk
 
-ALLOWED_ORIGINS = [origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "*").split(",")]
+logger = logging.getLogger(__name__)
+
+ALLOWED_ORIGINS = [origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "*").split(",") if origin.strip()]
+if not ALLOWED_ORIGINS:
+    ALLOWED_ORIGINS = ["*"]
+ALLOW_CREDENTIALS = ALLOWED_ORIGINS != ["*"]
+ON_VERCEL = os.getenv("VERCEL") == "1"
+
 SENTRY_DSN = os.getenv("SENTRY_DSN")
 if SENTRY_DSN:
     sentry_sdk.init(
@@ -39,7 +47,7 @@ app = FastAPI(title="User Service", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=ALLOW_CREDENTIALS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -49,13 +57,21 @@ app.include_router(admin_database_router)
 
 @app.on_event("startup")
 def startup_event():
-    if DB_TYPE in (DatabaseType.POSTGRESQL, DatabaseType.SQLITE):
-        from .database import Base, engine
-        if engine:
-            Base.metadata.create_all(bind=engine)
-    else:
-        ensure_indexes()
-        synchronization_service.start_worker()
+    try:
+        if DB_TYPE in (DatabaseType.POSTGRESQL, DatabaseType.SQLITE):
+            from .database import Base, engine
+            if engine:
+                Base.metadata.create_all(bind=engine)
+        else:
+            ensure_indexes()
+    except Exception:
+        logger.exception("Failed to initialize database schema on startup")
+
+    if not ON_VERCEL:
+        try:
+            synchronization_service.start_worker()
+        except Exception:
+            logger.exception("Failed to start sync worker")
 
 
 @app.on_event("shutdown")
@@ -81,6 +97,11 @@ def root():
         "version": "1.0.0",
         "database": DB_TYPE.value,
     }
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 
 # ── Auth routes (public) ────────────────────────────────────────────────────────
