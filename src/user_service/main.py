@@ -1,16 +1,10 @@
 from typing import Union
 
-<<<<<<< HEAD
-from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form
-=======
 from pydantic import BaseModel
 import bcrypt
 
 from fastapi import Depends, FastAPI, HTTPException
->>>>>>> 2035f1a9ad435fe5237c981b4371a5b21f60ffec
 from fastapi.middleware.cors import CORSMiddleware
-import base64
-from pathlib import Path
 
 from .config import DB_TYPE, DatabaseType
 from .repository import UserRepository
@@ -239,66 +233,6 @@ def update_status(
     if not repo.update_status(user_id, payload.status):
         raise HTTPException(status_code=404, detail="User not found")
     return {"message": "Status updated successfully"}
-
-
-@app.patch("/users/{user_id}/profile", response_model=UserResponse)
-async def update_profile(
-    user_id: Union[int, str],
-    user_name: str | None = Form(None),
-    bio_data: str | None = Form(None),
-    mobile_number: str | None = Form(None),
-    email: str | None = Form(None),
-    avatar: UploadFile | None = File(None),
-    repo: UserRepository = Depends(get_repository),
-):
-    """Update user profile including avatar/display picture"""
-    if DB_TYPE == DatabaseType.MONGODB:
-        user_id = str(user_id)
-    else:
-        user_id = int(user_id)
-
-    update_data = {}
-    
-    if user_name is not None:
-        update_data["user_name"] = user_name
-    if bio_data is not None:
-        update_data["bio_data"] = bio_data
-    if mobile_number is not None:
-        update_data["mobile_number"] = mobile_number
-    if email is not None:
-        update_data["email"] = email
-    
-    # Handle avatar upload
-    if avatar:
-        # Read file content
-        content = await avatar.read()
-        
-        # Validate file size (max 5MB)
-        if len(content) > 5 * 1024 * 1024:
-            raise HTTPException(status_code=400, detail="Avatar file too large (max 5MB)")
-        
-        # Validate file type
-        allowed_types = ["image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp"]
-        if avatar.content_type not in allowed_types:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid file type. Allowed: {', '.join(allowed_types)}"
-            )
-        
-        # Convert to base64 data URL for storage
-        base64_content = base64.b64encode(content).decode('utf-8')
-        data_url = f"data:{avatar.content_type};base64,{base64_content}"
-        update_data["user_dp"] = data_url
-
-    if not update_data:
-        raise HTTPException(status_code=400, detail="No fields to update")
-
-    user = repo.update(user_id, update_data)
-
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    return user
 
 
 @app.delete("/users/{user_id}", dependencies=[Depends(require_role(["ADMIN"]))])
