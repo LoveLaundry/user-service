@@ -49,7 +49,11 @@ def get_client(role: str) -> MongoClient:
     role = role.upper()
     if role not in _clients:
         uri, _ = _resolve(role)
-        _clients[role] = MongoClient(uri)
+        _clients[role] = MongoClient(
+            uri,
+            serverSelectionTimeoutMS=5000,
+            connectTimeoutMS=5000,
+        )
     return _clients[role]
 
 
