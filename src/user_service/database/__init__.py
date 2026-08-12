@@ -18,3 +18,6 @@ __all__ = [
     "ping",
     "close_all",
 ]
+from .sql_db import Base, engine, SessionLocal, get_db
+
+__all__.extend(["Base", "engine", "SessionLocal", "get_db"])
