@@ -203,6 +203,69 @@ def update_user(
     return user
 
 
+@app.patch("/users/{user_id}/profile", response_model=UserResponse)
+async def update_profile(
+    user_id: Union[int, str],
+    current_user: dict = Depends(get_current_user),
+    repo: UserRepository = Depends(get_repository),
+    user_name: str | None = Form(None),
+    bio_data: str | None = Form(None),
+    email: str | None = Form(None),
+    mobile_number: str | None = Form(None),
+    user_dp: str | None = Form(None),
+    avatar: UploadFile | None = File(None),
+):
+    if DB_TYPE == DatabaseType.MONGODB:
+        resolved_user_id = str(user_id)
+    else:
+        resolved_user_id = int(user_id)
+
+    # Only the account owner or an ADMIN may update this profile
+    token_uid = str(current_user.get("user_id"))
+    is_owner = token_uid == str(user_id)
+    if not (is_owner or str(current_user.get("role", "")).upper() == "ADMIN"):
+        raise HTTPException(status_code=403, detail="Not authorized to update this profile")
+
+    user = repo.get_by_id(resolved_user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    update_data = {}
+
+    if user_name is not None and user_name.strip():
+        update_data["user_name"] = user_name.strip()
+    if bio_data is not None:
+        update_data["bio_data"] = bio_data
+    if email is not None:
+        email_value = email.strip() or None
+        if email_value and email_value.lower() != (user.get("email") or "").lower():
+            if repo.exists_by_email(email_value):
+                raise HTTPException(status_code=400, detail="Email already exists")
+        update_data["email"] = email_value
+    if mobile_number is not None:
+        update_data["mobile_number"] = mobile_number.strip() or None
+    if user_dp is not None:
+        update_data["user_dp"] = user_dp
+
+    if avatar is not None and avatar.filename:
+        content = await avatar.read()
+        if len(content) > 5 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="Image too large (max 5MB)")
+        if not (avatar.content_type or "").startswith("image/"):
+            raise HTTPException(status_code=400, detail="Please select an image file")
+        avatar_b64 = base64.b64encode(content).decode("utf-8")
+        update_data["user_dp"] = f"data:{avatar.content_type};base64,{avatar_b64}"
+
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No profile fields to update")
+
+    updated_user = repo.update(resolved_user_id, update_data)
+    if not updated_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return updated_user
+
+
 @app.patch("/users/{user_id}/password", dependencies=[Depends(require_role(["ADMIN"]))])
 def update_password(
     user_id: Union[int, str],
