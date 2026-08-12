@@ -1,10 +1,10 @@
 from typing import Union
 
+from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import bcrypt
-
-from fastapi import Depends, FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+import base64
 
 from .config import DB_TYPE, DatabaseType
 from .repository import UserRepository
