@@ -65,6 +65,11 @@ class User(Base):
         default="unset"
     )
 
+    permissions: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

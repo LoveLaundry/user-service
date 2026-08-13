@@ -16,6 +16,7 @@ class UserCreate(BaseModel):
     status: str = "unset"
     public_key: str | None = None
     key_version: int | None = 1
+    permissions: str | None = None
 
 
 class UserUpdate(BaseModel):
@@ -31,6 +32,7 @@ class UserUpdate(BaseModel):
     status: str | None = None
     public_key: str | None = None
     key_version: int | None = None
+    permissions: str | None = None
 
 
 class UserPasswordUpdate(BaseModel):
@@ -54,6 +56,7 @@ class UserResponse(BaseModel):
     status: str
     public_key: str | None = None
     key_version: int | None = None
+    permissions: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

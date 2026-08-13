@@ -112,6 +112,7 @@ class MongoDBUserRepository(UserRepository):
             "status": user_data.get("status", "unset"),
             "public_key": user_data.get("public_key"),
             "key_version": user_data.get("key_version", 1),
+            "permissions": user_data.get("permissions"),
             "created_at": now,
             "updated_at": now,
         }

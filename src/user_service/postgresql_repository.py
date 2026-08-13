@@ -23,6 +23,7 @@ class PostgreSQLUserRepository(UserRepository):
             "auth_id": user.auth_id,
             "password": user.password,
             "status": user.status,
+            "permissions": user.permissions,
             "created_at": user.created_at,
             "updated_at": user.updated_at,
         }
@@ -63,6 +64,7 @@ class PostgreSQLUserRepository(UserRepository):
             auth_id=user_data["auth_id"],
             password=user_data["password"],
             status=user_data.get("status", "unset"),
+            permissions=user_data.get("permissions"),
         )
 
         self.db.add(user)
