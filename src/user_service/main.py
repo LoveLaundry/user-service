@@ -45,13 +45,17 @@ DEFAULT_ALLOWED_ORIGINS = [
 # known-good production origins. Never fall back to "*".
 try:
     ALLOWED_ORIGINS_ENV = os.getenv("ALLOWED_ORIGINS", "")
-    if ALLOWED_ORIGINS_ENV:
-        ALLOWED_ORIGINS = [origin.strip() for origin in ALLOWED_ORIGINS_ENV.split(",") if origin.strip()]
-        ALLOW_CREDENTIALS = True
-    else:
-        # If not configured, use the known production origins (never "*").
-        ALLOWED_ORIGINS = list(DEFAULT_ALLOWED_ORIGINS)
-        ALLOW_CREDENTIALS = True
+    # Always keep the known-good production origins in the allowlist, and never
+    # accept a literal "*" (Starlette refuses "*" when credentials are enabled).
+    # This way a missing or misconfigured ALLOWED_ORIGINS env can never lock out
+    # the live frontend.
+    configured = [
+        o.strip()
+        for o in ALLOWED_ORIGINS_ENV.split(",")
+        if o.strip() and o.strip() != "*"
+    ]
+    ALLOWED_ORIGINS = list(dict.fromkeys(configured + list(DEFAULT_ALLOWED_ORIGINS)))
+    ALLOW_CREDENTIALS = True
 
     logger.info(f"CORS configured with origins: {ALLOWED_ORIGINS}, credentials: {ALLOW_CREDENTIALS}")
 except Exception as e:
