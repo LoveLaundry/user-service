@@ -1,7 +1,6 @@
 from typing import Union
 
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form, Request
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import bcrypt
@@ -20,6 +19,7 @@ from .schemas import (
 )
 from .database.main_db import ensure_indexes
 from .database.connection_manager import close_all
+from .security import apply_security, insecure_flags
 from .routers.admin_database import router as admin_database_router
 from .services import synchronization_service
 
@@ -74,13 +74,7 @@ if SENTRY_DSN:
 
 app = FastAPI(title="User Service", version="1.0.0")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=ALLOW_CREDENTIALS,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+apply_security(app, rate_limit=300)
 
 
 @app.exception_handler(Exception)
@@ -138,7 +132,14 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "security": {
+            "headers": True,
+            "rate_limiting": True,
+            "insecure_defaults": insecure_flags(),
+        },
+    }
 
 
 # ── Auth routes (public) ────────────────────────────────────────────────────────
