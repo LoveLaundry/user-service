@@ -18,6 +18,7 @@ dependencies = [
     "cryptography>=42.0.0",
     "pyjwt>=2.7.0",
     "bcrypt>=4.0.0",
+    "python-multipart>=0.0.9",
     "uvicorn>=0.30.0",
     "starlette>=0.41.0",
     "sentry-sdk>=1.40.0",
