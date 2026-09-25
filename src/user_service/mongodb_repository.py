@@ -7,7 +7,7 @@ from bson import ObjectId
 from .repository import UserRepository
 from .crypto_helper import encrypt_dict, decrypt_dict, get_search_token
 from .database.main_db import users_collection
-from .repositories.main_repository import bump_version, enqueue_sync
+from .repositories.main_repository import bump_version, enqueue_delete, enqueue_sync
 from .services.verification_service import attach_verification_to
 
 USERS_COLLECTION = "users"
@@ -221,8 +221,18 @@ class MongoDBUserRepository(UserRepository):
 
     def delete(self, user_id: str) -> bool:
         try:
-            result = self.collection.delete_one({"_id": ObjectId(user_id)})
-            return result.deleted_count > 0
+            oid = ObjectId(user_id)
+            # Bump the version while the document still exists, then remove it
+            # and enqueue a DELETE so the SECONDARY replica drops the record.
+            try:
+                new_version = bump_version("user", oid)
+            except KeyError:
+                return False
+            result = self.collection.delete_one({"_id": oid})
+            if result.deleted_count == 0:
+                return False
+            enqueue_delete("user", oid, new_version)
+            return True
         except Exception:
             return False
 

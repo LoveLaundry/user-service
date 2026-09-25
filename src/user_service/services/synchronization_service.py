@@ -24,14 +24,19 @@ from ..config import (
     SYNC_WORKER_POLL_SECONDS,
 )
 from ..database.main_db import sync_logs_collection, sync_queue_collection
-from ..repositories.entity_registry import effective_version, get_main_collection
-from ..repositories.secondary_repository import upsert_document
+from ..repositories.entity_registry import effective_version, get_main_collection, to_record_id
+from ..repositories.main_repository import OPERATION_DELETE, OPERATION_UPSERT
+from ..repositories.secondary_repository import delete_document, upsert_document
 from . import verification_service
 
 logger = logging.getLogger(__name__)
 
 SYNC_OPERATION = "MAIN_TO_SECONDARY"
 MAX_ATTEMPTS = SYNC_RETRY_MAX_ATTEMPTS
+
+# Returned by process_one for a propagated deletion. There is no replica
+# document left to version-compare, so it is terminal rather than PENDING.
+STATUS_DELETED = "DELETED"
 
 
 def enqueue(entity: str, record_id: Any, version: int) -> None:
@@ -44,6 +49,7 @@ def enqueue(entity: str, record_id: Any, version: int) -> None:
                 "entity": entity,
                 "record_id": str(record_id),
                 "version": version,
+                "operation": OPERATION_UPSERT,
                 "status": "PENDING",
                 "attempts": 0,
                 "next_attempt_at": now,
@@ -89,10 +95,19 @@ def process_one(job: dict) -> str:
     """
     entity = job["entity"]
     record_id = job["record_id"]
+    operation = job.get("operation") or OPERATION_UPSERT
+    version = int(job.get("version") or 0)
+
+    if operation == OPERATION_DELETE:
+        # The record is intentionally gone from MAIN, so there is nothing to
+        # compare versions against. Propagate the deletion and record it.
+        delete_document(entity, record_id)
+        verification_service.mark_verified(entity, record_id, version)
+        return STATUS_DELETED
 
     # 1. Read raw encrypted doc from MAIN
     main_collection = get_main_collection(entity)
-    main_doc = main_collection.find_one({"_id": record_id})
+    main_doc = main_collection.find_one({"_id": to_record_id(record_id)})
     if main_doc is None:
         raise RuntimeError(f"Record {entity}/{record_id} no longer exists in MAIN")
 
