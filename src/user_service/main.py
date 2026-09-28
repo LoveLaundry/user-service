@@ -149,6 +149,12 @@ class LoginPayload(BaseModel):
     password: str
 
 
+# Statuses that block a sign-in. `unset` is the column default and `active` is
+# the only enabled value, so this is a blocklist rather than an allowlist: an
+# account that was never given a status must keep working.
+DISABLED_STATUSES = {"inactive", "disabled", "suspended", "blocked", "deleted"}
+
+
 @app.post("/auth/login")
 def login(payload: LoginPayload, repo: UserRepository = Depends(get_repository)):
     user = repo.get_by_auth_id(payload.username)
@@ -171,6 +177,17 @@ def login(payload: LoginPayload, repo: UserRepository = Depends(get_repository))
         raise HTTPException(status_code=400, detail="Invalid username or password")
 
     role = str(user["role_id"]).upper()
+
+    # An administrator can disable an account, but the flag was copied into the
+    # token and never acted on — a disabled user kept full access until the
+    # token expired. `unset` is the column default for accounts that were never
+    # given a status, so only an explicit disabled value blocks a sign-in.
+    status = str(user.get("status") or "unset").strip().lower()
+    if status in DISABLED_STATUSES:
+        raise HTTPException(
+            status_code=403,
+            detail="This account has been deactivated. Contact an administrator.",
+        )
 
     token_data = {
         "user_id": user["id"],
