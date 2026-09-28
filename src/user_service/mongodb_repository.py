@@ -1,3 +1,4 @@
+from ..app_time import UTC
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 import bcrypt
@@ -90,7 +91,7 @@ class MongoDBUserRepository(UserRepository):
         return attach_verification_to("user", doc["_id"], serialized)
 
     def create(self, user_data: Dict[str, Any]) -> Dict[str, Any]:
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
 
         raw_password = user_data.get("password", "")
         hashed_password = ""
@@ -133,7 +134,7 @@ class MongoDBUserRepository(UserRepository):
         self, user_id: str, update_data: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
         try:
-            update_data["updated_at"] = datetime.utcnow()
+            update_data["updated_at"] = datetime.now(UTC)
 
             if "password" in update_data and update_data["password"]:
                 raw_password = update_data["password"]
@@ -152,7 +153,7 @@ class MongoDBUserRepository(UserRepository):
 
             decrypted_original.update(update_data)
             decrypted_original.pop("created_at", None)
-            decrypted_original["updated_at"] = datetime.utcnow()
+            decrypted_original["updated_at"] = datetime.now(UTC)
 
             encrypted_new = encrypt_dict(decrypted_original, SENSITIVE_FIELDS)
 
@@ -190,7 +191,7 @@ class MongoDBUserRepository(UserRepository):
                 {
                     "$set": {
                         "password": hashed_password,
-                        "updated_at": datetime.utcnow(),
+                        "updated_at": datetime.now(UTC),
                     }
                 },
             )
@@ -208,7 +209,7 @@ class MongoDBUserRepository(UserRepository):
                 {
                     "$set": {
                         "status": status,
-                        "updated_at": datetime.utcnow(),
+                        "updated_at": datetime.now(UTC),
                     }
                 },
             )
