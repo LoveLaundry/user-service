@@ -1,4 +1,4 @@
-from ..app_time import stamp
+from .app_time import stamp
 from datetime import datetime
 from typing import Union
 from pydantic import BaseModel, EmailStr, field_serializer
