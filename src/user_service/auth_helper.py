@@ -12,6 +12,11 @@ JWT_ALGORITHM = "HS256"
 
 security = HTTPBearer()
 
+# Statuses that block an account. `unset` is the column default and `active` is
+# the only enabled value, so this is a blocklist rather than an allowlist: an
+# account that was never given a status must keep working.
+DISABLED_STATUSES = {"inactive", "disabled", "suspended", "blocked", "deleted"}
+
 
 def create_access_token(data: dict, expires_in_hours: int = 24) -> str:
     """Create a signed JWT token containing user info."""
@@ -38,10 +43,54 @@ def verify_token(token: str) -> dict:
         )
 
 
+def _fresh_user(auth_id: str):
+    """Reload the user row from the authoritative store for revocation checks."""
+    if not auth_id:
+        return None
+    from .repository_factory import get_repository
+
+    gen = get_repository()
+    repo = next(gen)
+    try:
+        return repo.get_by_auth_id(auth_id)
+    finally:
+        try:
+            next(gen)  # let the generator's finally blocks (e.g. DB close) run
+        except StopIteration:
+            pass
+
+
 def get_current_user(credentials=Security(security)) -> dict:
-    """FastAPI dependency to validate JWT authorization header."""
-    token = credentials.credentials
-    return verify_token(token)
+    """FastAPI dependency to validate JWT authorization header.
+
+    The token is verified cryptographically, then the account is reloaded from
+    the database so a disabled/deleted user loses access immediately — a token
+    that was valid at login must not keep working until it expires.
+    """
+    payload = verify_token(credentials.credentials)
+
+    auth_id = payload.get("auth_id")
+    if auth_id:
+        fresh = _fresh_user(auth_id)
+        if fresh is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Account no longer exists.",
+            )
+        if str(fresh.get("status") or "unset").strip().lower() in DISABLED_STATUSES:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This account has been deactivated. Contact an administrator.",
+            )
+        # Surface the live role/status so a demoted admin loses permissions at
+        # the next request instead of riding out a 24-hour token.
+        fresh_role = str(fresh.get("role_id") or "").upper()
+        if fresh_role:
+            payload["role"] = fresh_role
+        payload["status"] = fresh.get("status")
+        payload["user_name"] = fresh.get("user_name") or payload.get("user_name")
+
+    return payload
 
 
 def require_role(allowed_roles: list):

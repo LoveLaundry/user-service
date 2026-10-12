@@ -9,7 +9,12 @@ import base64
 from .config import DB_TYPE, DatabaseType
 from .repository import UserRepository
 from .repository_factory import close_connections, get_repository
-from .auth_helper import create_access_token, get_current_user, require_role
+from .auth_helper import (
+    DISABLED_STATUSES,
+    create_access_token,
+    get_current_user,
+    require_role,
+)
 from .schemas import (
     UserCreate,
     UserPasswordUpdate,
@@ -152,7 +157,8 @@ class LoginPayload(BaseModel):
 # Statuses that block a sign-in. `unset` is the column default and `active` is
 # the only enabled value, so this is a blocklist rather than an allowlist: an
 # account that was never given a status must keep working.
-DISABLED_STATUSES = {"inactive", "disabled", "suspended", "blocked", "deleted"}
+# (Single source of truth lives in auth_helper.py so get_current_user enforces
+# the same blocklist on every authed request.)
 
 
 @app.post("/auth/login")

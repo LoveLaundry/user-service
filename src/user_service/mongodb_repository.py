@@ -133,47 +133,44 @@ class MongoDBUserRepository(UserRepository):
     def update(
         self, user_id: str, update_data: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
-        try:
-            update_data["updated_at"] = datetime.now(UTC)
+        update_data["updated_at"] = datetime.now(UTC)
 
-            if "password" in update_data and update_data["password"]:
-                raw_password = update_data["password"]
-                update_data["password"] = bcrypt.hashpw(
-                    raw_password.encode("utf-8"), bcrypt.gensalt()
-                ).decode("utf-8")
+        if "password" in update_data and update_data["password"]:
+            raw_password = update_data["password"]
+            update_data["password"] = bcrypt.hashpw(
+                raw_password.encode("utf-8"), bcrypt.gensalt()
+            ).decode("utf-8")
 
-            original = self.collection.find_one({"_id": ObjectId(user_id)})
-            if not original:
-                return None
-
-            try:
-                decrypted_original = self.decrypt_document_full(original)
-            except Exception:
-                return None
-
-            decrypted_original.update(update_data)
-            decrypted_original.pop("created_at", None)
-            decrypted_original["updated_at"] = datetime.now(UTC)
-
-            encrypted_new = encrypt_dict(decrypted_original, SENSITIVE_FIELDS)
-
-            result = self.collection.find_one_and_update(
-                {"_id": ObjectId(user_id)},
-                {"$set": encrypted_new},
-                return_document=True,
-            )
-
-            if not result:
-                return None
-
-            # Main DB write succeeded -> bump version and enqueue replication
-            new_version = bump_version("user", ObjectId(user_id))
-            enqueue_sync("user", ObjectId(user_id), new_version)
-
-            serialized = self._serialize_document(result)
-            return attach_verification_to("user", ObjectId(user_id), serialized)
-        except Exception:
+        original = self.collection.find_one({"_id": ObjectId(user_id)})
+        if not original:
             return None
+
+        decrypted_original = self.decrypt_document_full(original)
+        decrypted_original.update(update_data)
+        # ``_id`` is immutable: decrypt_dict keeps it, so it would end up inside
+        # the ``$set`` payload and MongoDB rejects the whole update. Dropping it
+        # (plus created_at, which is set once) is what lets a user edit work.
+        decrypted_original.pop("_id", None)
+        decrypted_original.pop("created_at", None)
+        decrypted_original["updated_at"] = datetime.now(UTC)
+
+        encrypted_new = encrypt_dict(decrypted_original, SENSITIVE_FIELDS)
+
+        result = self.collection.find_one_and_update(
+            {"_id": ObjectId(user_id)},
+            {"$set": encrypted_new},
+            return_document=True,
+        )
+
+        if not result:
+            return None
+
+        # Main DB write succeeded -> bump version and enqueue replication
+        new_version = bump_version("user", ObjectId(user_id))
+        enqueue_sync("user", ObjectId(user_id), new_version)
+
+        serialized = self._serialize_document(result)
+        return attach_verification_to("user", ObjectId(user_id), serialized)
 
     def decrypt_document_full(self, doc: dict) -> dict:
         meta = doc.get("encryption_metadata")
