@@ -28,7 +28,7 @@ def test_bootstrap_creates_first_admin_and_token(repo):
     assert result["token_type"] == "bearer"
     assert result["access_token"]
     assert result["user"]["auth_id"] == "ceo-admin"
-    assert result["user"]["role_id"] == "ADMIN"
+    assert result["user"]["role_id"] == "PLATFORM_ADMIN"
     assert "password" not in result["user"]
 
     # The new admin can sign in with the same credentials.
@@ -37,7 +37,7 @@ def test_bootstrap_creates_first_admin_and_token(repo):
         repo,
     )
     assert signed_in["access_token"]
-    assert signed_in["user"]["role_id"] == "ADMIN"
+    assert signed_in["user"]["role_id"] == "PLATFORM_ADMIN"
 
     repo.delete(result["user"]["id"])
 

@@ -94,10 +94,16 @@ def get_current_user(credentials=Security(security)) -> dict:
 
 
 def require_role(allowed_roles: list):
-    """FastAPI dependency factory class to validate appropriate roles."""
+    """FastAPI dependency factory class to validate appropriate roles.
+
+    PLATFORM_ADMIN is a strict superset of ADMIN: anywhere ADMIN is accepted,
+    a platform administrator passes too. The reverse is never true.
+    """
 
     def dependency(current_user: dict = Security(get_current_user)):
         role = current_user.get("role")
+        if role == "PLATFORM_ADMIN" and "ADMIN" in allowed_roles:
+            return current_user
         if role not in allowed_roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

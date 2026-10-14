@@ -22,6 +22,8 @@ MOCK_DB_NAME = "mock_user"
 
 COLLECTION_NAMES = [
     "users_collection",
+    "laundries_collection",
+    "memberships_collection",
     "sync_queue_collection",
     "sync_status_collection",
     "sync_logs_collection",
@@ -37,12 +39,15 @@ DEPENDENT_MODULES = [
     "user_service.services.verification_service",
     "user_service.services.synchronization_service",
     "user_service.mongodb_repository",
+    "user_service.tenancy",
     "user_service.main",
 ]
 
 # (module, attribute) pairs that must all resolve to the mock database.
 GUARDED_HANDLES = [
     ("user_service.mongodb_repository", "users_collection"),
+    ("user_service.tenancy", "laundries_collection"),
+    ("user_service.tenancy", "memberships_collection"),
     ("user_service.repositories.main_repository", "sync_queue_collection"),
     ("user_service.repositories.main_repository", "sync_status_collection"),
     ("user_service.services.synchronization_service", "sync_queue_collection"),
