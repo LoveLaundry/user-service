@@ -68,3 +68,9 @@ class UserResponse(BaseModel):
         return stamp(value)
 
     model_config = {"from_attributes": True}
+
+
+class AuthResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserResponse
