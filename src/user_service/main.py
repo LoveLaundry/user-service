@@ -1,4 +1,3 @@
-from .tenancy import TenantMiddleware
 from typing import Union
 
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form, Request
@@ -23,6 +22,16 @@ from .schemas import (
     UserResponse,
     UserStatusUpdate,
     UserUpdate,
+)
+from .memberships import (
+    ACTIVE,
+    VALID_STATUSES,
+    build_claims,
+    effective_memberships,
+    grant,
+    normalize_laundry_id,
+    revoke,
+    stored_memberships,
 )
 from .database.main_db import ensure_indexes
 from .database.connection_manager import close_all
@@ -83,7 +92,6 @@ app = FastAPI(title="User Service", version="1.0.0")
 
 apply_security(app, rate_limit=300)
 
-app.add_middleware(TenantMiddleware)
 
 
 @app.exception_handler(Exception)
@@ -156,29 +164,23 @@ def health():
 class LoginPayload(BaseModel):
     username: str
     password: str
+    # Optional: sign straight into a laundry the user is an ACTIVE member of.
+    # Omitted -> the single active membership, if there is exactly one.
+    laundry_id: str | None = None
 
 
-<<<<<<< HEAD
-# Accounts in any of these states must never receive a token. The list is a
-# denylist on purpose: legacy rows use "unset" (and some use "active"), so an
-# allowlist of "ACTIVE" would lock out working accounts.
-_BLOCKED_STATUSES = {"INACTIVE", "SUSPENDED", "DISABLED", "LOCKED", "BLOCKED", "DELETED"}
+# Sign-in status gate. The authoritative blocklist lives in auth_helper.py
+# (DISABLED_STATUSES) and is enforced on every authenticated request; it is
+# reused here so login and token verification cannot drift apart.
 
-# A valid bcrypt hash of a random value. Verifying against it keeps the response
-# time for an unknown username indistinguishable from a wrong password, so the
-# endpoint cannot be used to enumerate accounts.
+# A valid bcrypt hash of a random value. Verifying against it keeps the
+# response time for an unknown username indistinguishable from a wrong
+# password, so the endpoint cannot be used to enumerate accounts.
 _DUMMY_PASSWORD_HASH = bcrypt.hashpw(b"timing-equalizer", bcrypt.gensalt()).decode("utf-8")
 
 
 def _is_blocked(user: dict) -> bool:
-    return str(user.get("status") or "").strip().upper() in _BLOCKED_STATUSES
-=======
-# Statuses that block a sign-in. `unset` is the column default and `active` is
-# the only enabled value, so this is a blocklist rather than an allowlist: an
-# account that was never given a status must keep working.
-# (Single source of truth lives in auth_helper.py so get_current_user enforces
-# the same blocklist on every authed request.)
->>>>>>> 9d331e43f618a2d95a306f2e7604869bc97b8452
+    return str(user.get("status") or "unset").strip().lower() in DISABLED_STATUSES
 
 
 @app.post("/auth/login")
@@ -232,10 +234,13 @@ def login(payload: LoginPayload, repo: UserRepository = Depends(get_repository))
         "user_name": user["user_name"],
         "role": role,
         "status": user["status"],
-        "tenant": str(user.get("tenant") or "").strip().lower(),
+        # Tenant claims every resource service trusts. Built in one place so
+        # login, bootstrap and switching cannot drift.
+        **build_claims(user, payload.laundry_id),
     }
 
     user_response = {k: v for k, v in user.items() if k != "password"}
+    user_response["laundries"] = effective_memberships(user)
     user_response["role_id"] = role
 
     token = create_access_token(token_data)
@@ -295,9 +300,11 @@ def bootstrap_first_admin(payload: BootstrapPayload, repo: UserRepository = Depe
         "user_name": user["user_name"],
         "role": "ADMIN",
         "status": user.get("status"),
+        **build_claims(user),
     }
     user_response = {k: v for k, v in user.items() if k != "password"}
     user_response["role_id"] = "ADMIN"
+    user_response["laundries"] = effective_memberships(user)
     return {
         "access_token": create_access_token(token_data),
         "token_type": "bearer",
@@ -514,3 +521,147 @@ def delete_user(
     if not repo.delete(user_id):
         raise HTTPException(status_code=404, detail="User not found")
     return {"message": "User deleted successfully"}
+# ── Laundry memberships ────────────────────────────────────────────────────────
+# Accounts predating multi-tenancy have no stored memberships; effective_memberships()
+# synthesizes the historical one so they keep working. Only explicit grants persist.
+
+
+class LaundryGrantPayload(BaseModel):
+    laundry_id: str = Field(min_length=1, max_length=32)
+    name: str | None = Field(default=None, max_length=120)
+    role: str | None = Field(default=None, max_length=32)
+    status: str = ACTIVE
+
+
+class LaundryStatusPayload(BaseModel):
+    status: str
+
+
+class SwitchLaundryPayload(BaseModel):
+    laundry_id: str = Field(min_length=1, max_length=32)
+
+
+class SwitchLaundryResponse(BaseModel):
+    """Token plus the claims it carries — never a user document."""
+
+    access_token: str
+    token_type: str = "bearer"
+    laundry_id: str
+    laundries: list[dict]
+
+
+def _coerce_user_id(user_id: Union[int, str]) -> Union[int, str]:
+    return str(user_id) if DB_TYPE == DatabaseType.MONGODB else int(user_id)
+
+
+def _load_user(repo: UserRepository, user_id: Union[int, str]) -> dict:
+    user = repo.get_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+def _persist_memberships(repo: UserRepository, user_id: Union[int, str], entries: list) -> list:
+    if repo.update(user_id, {"laundries": entries}) is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return entries
+
+
+@app.get("/users/{user_id}/laundries", dependencies=[Depends(require_role(["ADMIN"]))])
+def list_memberships(
+    user_id: Union[int, str],
+    repo: UserRepository = Depends(get_repository),
+):
+    user = _load_user(repo, _coerce_user_id(user_id))
+    return {
+        "user_id": str(user.get("id")),
+        "laundries": effective_memberships(user),
+        "stored": bool(stored_memberships(user)),
+    }
+
+
+@app.post(
+    "/users/{user_id}/laundries",
+    status_code=201,
+    dependencies=[Depends(require_role(["ADMIN"]))],
+)
+def grant_membership(
+    user_id: Union[int, str],
+    payload: LaundryGrantPayload,
+    repo: UserRepository = Depends(get_repository),
+):
+    status = str(payload.status or ACTIVE).strip().upper()
+    if status not in VALID_STATUSES:
+        raise HTTPException(status_code=400, detail=f"status must be one of {sorted(VALID_STATUSES)}")
+    user = _load_user(repo, _coerce_user_id(user_id))
+    entries = grant(
+        user,
+        payload.laundry_id,
+        name=payload.name,
+        role=payload.role,
+        status=status,
+    )
+    return {"laundries": _persist_memberships(repo, _coerce_user_id(user_id), entries)}
+
+
+@app.patch(
+    "/users/{user_id}/laundries/{laundry_id}",
+    dependencies=[Depends(require_role(["ADMIN"]))],
+)
+def set_membership_status(
+    user_id: Union[int, str],
+    laundry_id: str,
+    payload: LaundryStatusPayload,
+    repo: UserRepository = Depends(get_repository),
+):
+    status = str(payload.status or "").strip().upper()
+    if status not in VALID_STATUSES:
+        raise HTTPException(status_code=400, detail=f"status must be one of {sorted(VALID_STATUSES)}")
+    slug = normalize_laundry_id(laundry_id)
+    user = _load_user(repo, _coerce_user_id(user_id))
+    if not any(entry["id"] == slug for entry in effective_memberships(user)):
+        raise HTTPException(status_code=404, detail="Membership not found")
+    entries = grant(user, slug, status=status)
+    return {"laundries": _persist_memberships(repo, _coerce_user_id(user_id), entries)}
+
+
+@app.delete(
+    "/users/{user_id}/laundries/{laundry_id}",
+    dependencies=[Depends(require_role(["ADMIN"]))],
+)
+def revoke_membership(
+    user_id: Union[int, str],
+    laundry_id: str,
+    repo: UserRepository = Depends(get_repository),
+):
+    user = _load_user(repo, _coerce_user_id(user_id))
+    entries = revoke(user, laundry_id)
+    _persist_memberships(repo, _coerce_user_id(user_id), entries)
+    return {"message": "Membership revoked", "laundries": entries}
+
+
+@app.post("/auth/switch-laundry", response_model=SwitchLaundryResponse)
+def switch_laundry(
+    payload: SwitchLaundryPayload,
+    current_user: dict = Depends(get_current_user),
+    repo: UserRepository = Depends(get_repository),
+):
+    """Re-issue this session's token for another laundry the user belongs to."""
+    user = _load_user(repo, current_user.get("user_id"))
+    if str(user.get("status") or "unset").strip().lower() in DISABLED_STATUSES:
+        raise HTTPException(status_code=403, detail="This account is inactive")
+    claims = build_claims(user, payload.laundry_id)
+    token_data = {
+        "user_id": user["id"],
+        "auth_id": user["auth_id"],
+        "user_name": user["user_name"],
+        "role": str(user["role_id"]).upper(),
+        "status": user.get("status"),
+        **claims,
+    }
+    return {
+        "access_token": create_access_token(token_data),
+        "token_type": "bearer",
+        "laundry_id": claims["laundry_id"],
+        "laundries": claims["laundries"],
+    }
