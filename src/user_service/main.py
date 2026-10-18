@@ -53,6 +53,8 @@ logger = logging.getLogger(__name__)
 # the ALLOWED_ORIGINS env var is not injected by the platform).
 DEFAULT_ALLOWED_ORIGINS = [
     "https://lovelaundry-manager.vercel.app",
+
+    "https://system-lovelaundry-lk.vercel.app",
     "http://localhost:5173",
     "http://localhost:3000",
 ]
