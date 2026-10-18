@@ -10,6 +10,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends
 
+from ..app_time import stamp
 from ..auth_helper import require_role
 from ..database.connection_manager import ping
 from ..services import local_sync_service, synchronization_service
@@ -25,7 +26,7 @@ def _format_log(entry: dict) -> dict:
     out["id"] = str(out.pop("_id", ""))
     for key in ("started_at", "completed_at", "created_at"):
         if isinstance(out.get(key), datetime):
-            out[key] = out[key].isoformat()
+            out[key] = stamp(out[key])
     return out
 
 

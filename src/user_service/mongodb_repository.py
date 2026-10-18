@@ -1,3 +1,4 @@
+from .app_time import UTC
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 import bcrypt
@@ -7,7 +8,7 @@ from bson import ObjectId
 from .repository import UserRepository
 from .crypto_helper import encrypt_dict, decrypt_dict, get_search_token
 from .database.main_db import users_collection
-from .repositories.main_repository import bump_version, enqueue_sync
+from .repositories.main_repository import bump_version, enqueue_delete, enqueue_sync
 from .services.verification_service import attach_verification_to
 
 USERS_COLLECTION = "users"
@@ -90,7 +91,7 @@ class MongoDBUserRepository(UserRepository):
         return attach_verification_to("user", doc["_id"], serialized)
 
     def create(self, user_data: Dict[str, Any]) -> Dict[str, Any]:
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
 
         raw_password = user_data.get("password", "")
         hashed_password = ""
@@ -136,47 +137,44 @@ class MongoDBUserRepository(UserRepository):
     def update(
         self, user_id: str, update_data: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
-        try:
-            update_data["updated_at"] = datetime.utcnow()
+        update_data["updated_at"] = datetime.now(UTC)
 
-            if "password" in update_data and update_data["password"]:
-                raw_password = update_data["password"]
-                update_data["password"] = bcrypt.hashpw(
-                    raw_password.encode("utf-8"), bcrypt.gensalt()
-                ).decode("utf-8")
+        if "password" in update_data and update_data["password"]:
+            raw_password = update_data["password"]
+            update_data["password"] = bcrypt.hashpw(
+                raw_password.encode("utf-8"), bcrypt.gensalt()
+            ).decode("utf-8")
 
-            original = self.collection.find_one({"_id": ObjectId(user_id)})
-            if not original:
-                return None
-
-            try:
-                decrypted_original = self.decrypt_document_full(original)
-            except Exception:
-                return None
-
-            decrypted_original.update(update_data)
-            decrypted_original.pop("created_at", None)
-            decrypted_original["updated_at"] = datetime.utcnow()
-
-            encrypted_new = encrypt_dict(decrypted_original, SENSITIVE_FIELDS)
-
-            result = self.collection.find_one_and_update(
-                {"_id": ObjectId(user_id)},
-                {"$set": encrypted_new},
-                return_document=True,
-            )
-
-            if not result:
-                return None
-
-            # Main DB write succeeded -> bump version and enqueue replication
-            new_version = bump_version("user", ObjectId(user_id))
-            enqueue_sync("user", ObjectId(user_id), new_version)
-
-            serialized = self._serialize_document(result)
-            return attach_verification_to("user", ObjectId(user_id), serialized)
-        except Exception:
+        original = self.collection.find_one({"_id": ObjectId(user_id)})
+        if not original:
             return None
+
+        decrypted_original = self.decrypt_document_full(original)
+        decrypted_original.update(update_data)
+        # ``_id`` is immutable: decrypt_dict keeps it, so it would end up inside
+        # the ``$set`` payload and MongoDB rejects the whole update. Dropping it
+        # (plus created_at, which is set once) is what lets a user edit work.
+        decrypted_original.pop("_id", None)
+        decrypted_original.pop("created_at", None)
+        decrypted_original["updated_at"] = datetime.now(UTC)
+
+        encrypted_new = encrypt_dict(decrypted_original, SENSITIVE_FIELDS)
+
+        result = self.collection.find_one_and_update(
+            {"_id": ObjectId(user_id)},
+            {"$set": encrypted_new},
+            return_document=True,
+        )
+
+        if not result:
+            return None
+
+        # Main DB write succeeded -> bump version and enqueue replication
+        new_version = bump_version("user", ObjectId(user_id))
+        enqueue_sync("user", ObjectId(user_id), new_version)
+
+        serialized = self._serialize_document(result)
+        return attach_verification_to("user", ObjectId(user_id), serialized)
 
     def decrypt_document_full(self, doc: dict) -> dict:
         meta = doc.get("encryption_metadata")
@@ -194,7 +192,7 @@ class MongoDBUserRepository(UserRepository):
                 {
                     "$set": {
                         "password": hashed_password,
-                        "updated_at": datetime.utcnow(),
+                        "updated_at": datetime.now(UTC),
                     }
                 },
             )
@@ -212,7 +210,7 @@ class MongoDBUserRepository(UserRepository):
                 {
                     "$set": {
                         "status": status,
-                        "updated_at": datetime.utcnow(),
+                        "updated_at": datetime.now(UTC),
                     }
                 },
             )
@@ -225,8 +223,18 @@ class MongoDBUserRepository(UserRepository):
 
     def delete(self, user_id: str) -> bool:
         try:
-            result = self.collection.delete_one({"_id": ObjectId(user_id)})
-            return result.deleted_count > 0
+            oid = ObjectId(user_id)
+            # Bump the version while the document still exists, then remove it
+            # and enqueue a DELETE so the SECONDARY replica drops the record.
+            try:
+                new_version = bump_version("user", oid)
+            except KeyError:
+                return False
+            result = self.collection.delete_one({"_id": oid})
+            if result.deleted_count == 0:
+                return False
+            enqueue_delete("user", oid, new_version)
+            return True
         except Exception:
             return False
 

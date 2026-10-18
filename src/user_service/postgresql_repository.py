@@ -1,9 +1,17 @@
 from typing import List, Optional, Dict, Any
 
+import bcrypt
 from sqlalchemy.orm import Session
 
 from .models import User
 from .repository import UserRepository
+
+
+def _hash_password(raw_password: str) -> str:
+    """Hash a plaintext password with bcrypt, matching the MongoDB repository."""
+    if not raw_password:
+        return ""
+    return bcrypt.hashpw(raw_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 
 class PostgreSQLUserRepository(UserRepository):
@@ -62,7 +70,7 @@ class PostgreSQLUserRepository(UserRepository):
             role_id=user_data["role_id"],
             employee_id=user_data.get("employee_id"),
             auth_id=user_data["auth_id"],
-            password=user_data["password"],
+            password=_hash_password(user_data.get("password", "")),
             status=user_data.get("status", "unset"),
             permissions=user_data.get("permissions"),
         )
@@ -79,6 +87,11 @@ class PostgreSQLUserRepository(UserRepository):
         if not user:
             return None
 
+        update_data = dict(update_data)
+        # Never persist a plaintext password from a generic update.
+        if update_data.get("password"):
+            update_data["password"] = _hash_password(update_data["password"])
+
         for key, value in update_data.items():
             if hasattr(user, key):
                 setattr(user, key, value)
@@ -94,7 +107,7 @@ class PostgreSQLUserRepository(UserRepository):
         if not user:
             return False
 
-        user.password = password
+        user.password = _hash_password(password)
         self.db.commit()
 
         return True

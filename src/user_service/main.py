@@ -3,15 +3,21 @@ from typing import Union
 
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import bcrypt
 import base64
 
 from .config import DB_TYPE, DatabaseType
 from .repository import UserRepository
 from .repository_factory import close_connections, get_repository
-from .auth_helper import create_access_token, get_current_user, require_role
+from .auth_helper import (
+    DISABLED_STATUSES,
+    create_access_token,
+    get_current_user,
+    require_role,
+)
 from .schemas import (
+    AuthResponse,
     UserCreate,
     UserPasswordUpdate,
     UserResponse,
@@ -152,6 +158,7 @@ class LoginPayload(BaseModel):
     password: str
 
 
+<<<<<<< HEAD
 # Accounts in any of these states must never receive a token. The list is a
 # denylist on purpose: legacy rows use "unset" (and some use "active"), so an
 # allowlist of "ACTIVE" would lock out working accounts.
@@ -165,6 +172,13 @@ _DUMMY_PASSWORD_HASH = bcrypt.hashpw(b"timing-equalizer", bcrypt.gensalt()).deco
 
 def _is_blocked(user: dict) -> bool:
     return str(user.get("status") or "").strip().upper() in _BLOCKED_STATUSES
+=======
+# Statuses that block a sign-in. `unset` is the column default and `active` is
+# the only enabled value, so this is a blocklist rather than an allowlist: an
+# account that was never given a status must keep working.
+# (Single source of truth lives in auth_helper.py so get_current_user enforces
+# the same blocklist on every authed request.)
+>>>>>>> 9d331e43f618a2d95a306f2e7604869bc97b8452
 
 
 @app.post("/auth/login")
@@ -201,6 +215,17 @@ def login(payload: LoginPayload, repo: UserRepository = Depends(get_repository))
 
     role = str(user["role_id"]).upper()
 
+    # An administrator can disable an account, but the flag was copied into the
+    # token and never acted on — a disabled user kept full access until the
+    # token expired. `unset` is the column default for accounts that were never
+    # given a status, so only an explicit disabled value blocks a sign-in.
+    status = str(user.get("status") or "unset").strip().lower()
+    if status in DISABLED_STATUSES:
+        raise HTTPException(
+            status_code=403,
+            detail="This account has been deactivated. Contact an administrator.",
+        )
+
     token_data = {
         "user_id": user["id"],
         "auth_id": user["auth_id"],
@@ -216,6 +241,65 @@ def login(payload: LoginPayload, repo: UserRepository = Depends(get_repository))
     token = create_access_token(token_data)
     return {
         "access_token": token,
+        "token_type": "bearer",
+        "user": user_response,
+    }
+
+
+class BootstrapPayload(BaseModel):
+    auth_id: str = Field(min_length=3, max_length=64)
+    user_name: str = Field(min_length=1, max_length=120)
+    password: str = Field(min_length=8, max_length=128)
+    email: str | None = None
+
+
+@app.post("/auth/bootstrap", response_model=AuthResponse, status_code=201)
+def bootstrap_first_admin(payload: BootstrapPayload, repo: UserRepository = Depends(get_repository)):
+    """Create the first ADMIN on a fresh database and sign them in.
+
+    Fail-closed: once any user exists the endpoint refuses (403), so it can
+    never be used to escalate afterwards. Without this, a fresh database is
+    a deadlock — every user route requires ADMIN, so no account could ever
+    be created and nobody could log in.
+    """
+    try:
+        existing = repo.count()
+    except Exception:
+        raise HTTPException(status_code=503, detail="Database is unreachable — try again shortly")
+    if existing > 0:
+        raise HTTPException(status_code=403, detail="Bootstrap is disabled once users exist")
+    if repo.exists_by_auth_id(payload.auth_id):
+        raise HTTPException(status_code=400, detail="Auth ID already exists")
+    if payload.email and repo.exists_by_email(payload.email):
+        raise HTTPException(status_code=400, detail="Email already exists")
+
+    try:
+        user = repo.create(
+            {
+                "auth_id": payload.auth_id.strip(),
+                "user_name": payload.user_name.strip(),
+                "password": payload.password,
+                "email": payload.email.strip() if payload.email else None,
+                "role_id": "ADMIN",
+                "status": "active",
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=403, detail="Bootstrap is disabled once users exist")
+
+    token_data = {
+        "user_id": user["id"],
+        "auth_id": user["auth_id"],
+        "user_name": user["user_name"],
+        "role": "ADMIN",
+        "status": user.get("status"),
+    }
+    user_response = {k: v for k, v in user.items() if k != "password"}
+    user_response["role_id"] = "ADMIN"
+    return {
+        "access_token": create_access_token(token_data),
         "token_type": "bearer",
         "user": user_response,
     }

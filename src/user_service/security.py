@@ -71,7 +71,14 @@ def _generate_req_id() -> str:
 
 
 def _resolve_origins() -> list[str]:
-    raw = os.getenv("CORS_ORIGINS", "")
+    # Honor both env names: the platform injects ALLOWED_ORIGINS while local
+    # tooling historically used CORS_ORIGINS. main.py computes the same
+    # ALLOWED_ORIGINS list from ALLOWED_ORIGINS — merging keeps both in effect.
+    raw = ",".join(
+        part
+        for part in (os.getenv("CORS_ORIGINS", ""), os.getenv("ALLOWED_ORIGINS", ""))
+        if part.strip()
+    )
     configured = [
         o.strip()
         for o in raw.split(",")

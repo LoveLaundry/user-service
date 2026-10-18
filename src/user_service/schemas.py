@@ -1,3 +1,4 @@
+from .app_time import stamp
 from datetime import datetime
 from typing import Union
 from pydantic import BaseModel, EmailStr, field_serializer
@@ -66,6 +67,12 @@ class UserResponse(BaseModel):
     def serialize_datetime(self, value: datetime | None) -> str | None:
         if value is None:
             return None
-        return value.isoformat()
+        return stamp(value)
 
     model_config = {"from_attributes": True}
+
+
+class AuthResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserResponse

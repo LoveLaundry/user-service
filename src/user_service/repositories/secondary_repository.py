@@ -9,13 +9,13 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from ..database.secondary_db import sync_status_collection
-from .entity_registry import effective_version, get_secondary_collection
+from .entity_registry import effective_version, get_secondary_collection, to_record_id
 
 
 def fetch_document(entity: str, record_id: Any) -> Optional[dict]:
     """Read the raw (encrypted) document from the SECONDARY database."""
     collection = get_secondary_collection(entity)
-    return collection.find_one({"_id": record_id})
+    return collection.find_one({"_id": to_record_id(record_id)})
 
 
 def upsert_document(entity: str, document: dict) -> None:
@@ -26,6 +26,12 @@ def upsert_document(entity: str, document: dict) -> None:
     collection = get_secondary_collection(entity)
     record_id = document["_id"]
     collection.replace_one({"_id": record_id}, document, upsert=True)
+
+
+def delete_document(entity: str, record_id: Any) -> bool:
+    """Remove a record from SECONDARY so replica deletions follow MAIN."""
+    collection = get_secondary_collection(entity)
+    return collection.delete_one({"_id": to_record_id(record_id)}).deleted_count > 0
 
 
 def update_sync_status(
