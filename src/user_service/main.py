@@ -149,6 +149,21 @@ class LoginPayload(BaseModel):
     password: str
 
 
+# Accounts in any of these states must never receive a token. The list is a
+# denylist on purpose: legacy rows use "unset" (and some use "active"), so an
+# allowlist of "ACTIVE" would lock out working accounts.
+_BLOCKED_STATUSES = {"INACTIVE", "SUSPENDED", "DISABLED", "LOCKED", "BLOCKED", "DELETED"}
+
+# A valid bcrypt hash of a random value. Verifying against it keeps the response
+# time for an unknown username indistinguishable from a wrong password, so the
+# endpoint cannot be used to enumerate accounts.
+_DUMMY_PASSWORD_HASH = bcrypt.hashpw(b"timing-equalizer", bcrypt.gensalt()).decode("utf-8")
+
+
+def _is_blocked(user: dict) -> bool:
+    return str(user.get("status") or "").strip().upper() in _BLOCKED_STATUSES
+
+
 @app.post("/auth/login")
 def login(payload: LoginPayload, repo: UserRepository = Depends(get_repository)):
     user = repo.get_by_auth_id(payload.username)
@@ -159,6 +174,11 @@ def login(payload: LoginPayload, repo: UserRepository = Depends(get_repository))
             user = None
 
     if not user or "password" not in user:
+        # Still burn a bcrypt verification so timing does not reveal existence.
+        try:
+            bcrypt.checkpw(payload.password.encode("utf-8"), _DUMMY_PASSWORD_HASH.encode("utf-8"))
+        except ValueError:
+            pass
         raise HTTPException(status_code=400, detail="Invalid username or password")
 
     pw_bytes = payload.password.encode("utf-8")
@@ -169,6 +189,12 @@ def login(payload: LoginPayload, repo: UserRepository = Depends(get_repository))
             raise ValueError("Hash mismatch")
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid username or password")
+
+    if _is_blocked(user):
+        raise HTTPException(
+            status_code=403,
+            detail="This account is inactive. Contact an administrator.",
+        )
 
     role = str(user["role_id"]).upper()
 
