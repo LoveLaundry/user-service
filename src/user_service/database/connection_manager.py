@@ -11,7 +11,9 @@ Roles:
     SECONDARY verification replica (written only by the sync worker)
     LOCAL     admin-triggered replica
 """
+
 from __future__ import annotations
+from ..tenancy import resolve_db_name
 
 from pymongo import MongoClient
 
@@ -60,10 +62,12 @@ def get_client(role: str) -> MongoClient:
 def get_database(role: str):
     """Return the role-specific database object. NEVER cross roles."""
     role = role.upper()
-    if role not in _databases:
-        uri, db_name = _resolve(role)
-        _databases[role] = get_client(role)[db_name]
-    return _databases[role]
+    uri, db_name = _resolve(role)
+    db_name = resolve_db_name(db_name)
+    cache_key = f"{role}:{db_name}"
+    if cache_key not in _databases:
+        _databases[cache_key] = get_client(role)[db_name]
+    return _databases[cache_key]
 
 
 def ping(role: str) -> bool:

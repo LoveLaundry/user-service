@@ -1,3 +1,4 @@
+from .tenancy import TenantMiddleware
 from typing import Union
 
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form, Request
@@ -75,6 +76,8 @@ if SENTRY_DSN:
 app = FastAPI(title="User Service", version="1.0.0")
 
 apply_security(app, rate_limit=300)
+
+app.add_middleware(TenantMiddleware)
 
 
 @app.exception_handler(Exception)
@@ -204,6 +207,7 @@ def login(payload: LoginPayload, repo: UserRepository = Depends(get_repository))
         "user_name": user["user_name"],
         "role": role,
         "status": user["status"],
+        "tenant": str(user.get("tenant") or "").strip().lower(),
     }
 
     user_response = {k: v for k, v in user.items() if k != "password"}

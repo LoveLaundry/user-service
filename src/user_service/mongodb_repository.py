@@ -117,6 +117,10 @@ class MongoDBUserRepository(UserRepository):
             "updated_at": now,
         }
 
+        # Tenant slug decides which database this account belongs to; it is
+        # set once at creation and never editable through the API.
+        document["tenant"] = (user_data.get("tenant") or "").strip().lower() or None
+
         encrypted_document = encrypt_dict(document, SENSITIVE_FIELDS)
 
         result = self.collection.insert_one(encrypted_document)

@@ -14,6 +14,7 @@ class UserCreate(BaseModel):
     auth_id: str
     password: str
     status: str = "unset"
+    tenant: str | None = None
     public_key: str | None = None
     key_version: int | None = 1
     permissions: str | None = None
@@ -54,6 +55,7 @@ class UserResponse(BaseModel):
     employee_id: str | None = None
     auth_id: str
     status: str
+    tenant: str | None = None
     public_key: str | None = None
     key_version: int | None = None
     permissions: str | None = None
