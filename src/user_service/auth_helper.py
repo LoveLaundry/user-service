@@ -92,21 +92,35 @@ def get_current_user(credentials=Security(security)) -> dict:
         # The tenant registry is gated on this flag, so it must come from the
         # database rather than the token snapshot: revoking it takes effect on
         # the next request instead of when the token expires.
-        payload["platform_admin"] = bool(fresh.get("platform_admin"))
+        # The role is authoritative; the flag is an additional grant. Without
+        # this, an account holding PLATFORM_ADMIN but not the flag reported
+        # platform_admin:false while the UI treated it as a platform admin.
+        payload["platform_admin"] = bool(fresh.get("platform_admin")) or str(
+            fresh.get("role_id") or ""
+        ).upper() == "PLATFORM_ADMIN"
 
     return payload
 
 
 def require_role(allowed_roles: list):
-    """FastAPI dependency factory class to validate appropriate roles."""
+    """FastAPI dependency factory to validate roles.
+
+    ``PLATFORM_ADMIN`` outranks ``ADMIN``. The user directory is the platform
+    operator's responsibility, so an account holding the platform role must not
+    be locked out of a route that a laundry administrator can reach — that
+    inversion is what returned 403 to the platform account while the UI showed
+    it the Users page.
+    """
+
+    allowed = {str(r).upper() for r in allowed_roles}
 
     def dependency(current_user: dict = Security(get_current_user)):
-        role = current_user.get("role")
-        if role not in allowed_roles:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Role '{role}' is not authorized to access this resource",
-            )
-        return current_user
+        role = str(current_user.get("role") or "").upper()
+        if role in allowed or (role == "PLATFORM_ADMIN" and "ADMIN" in allowed):
+            return current_user
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Role '{role}' is not authorized to access this resource",
+        )
 
     return dependency

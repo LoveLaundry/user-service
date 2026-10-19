@@ -259,7 +259,8 @@ def login(payload: LoginPayload, repo: UserRepository = Depends(get_repository))
         "user_name": user["user_name"],
         "role": role,
         "status": user["status"],
-        "platform_admin": bool(user.get("platform_admin")),
+        "platform_admin": bool(user.get("platform_admin"))
+        or str(role).upper() == "PLATFORM_ADMIN",
         # Tenant claims every resource service trusts. Built in one place so
         # login, bootstrap and switching cannot drift.
         **build_claims(user, payload.laundry_id),
@@ -268,7 +269,9 @@ def login(payload: LoginPayload, repo: UserRepository = Depends(get_repository))
     user_response = {k: v for k, v in user.items() if k != "password"}
     user_response["laundries"] = effective_memberships(user)
     user_response["role_id"] = role
-    user_response["platform_admin"] = bool(user.get("platform_admin"))
+    user_response["platform_admin"] = bool(user.get("platform_admin")) or str(
+        role
+    ).upper() == "PLATFORM_ADMIN"
 
     token = create_access_token(token_data)
     return {

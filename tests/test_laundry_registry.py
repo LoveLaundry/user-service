@@ -171,3 +171,16 @@ def test_flagged_admin_reaches_the_registry(client, mocked_db):
 
     assert client.get("/laundries", headers=_auth(token)).status_code == 200
     assert _register(client, token, "acme", "Acme").status_code == 201
+
+
+def test_platform_admin_role_can_list_users(client, mocked_db):
+    """Reported in production: GET /users returned 403 for a PLATFORM_ADMIN.
+
+    The role only satisfied platform routes, so the account could see the Users
+    page but not load it.
+    """
+    _, token = _seed_user(mocked_db, "platadmin", platform_admin=False, role="PLATFORM_ADMIN")
+
+    response = client.get("/users", headers=_auth(token))
+
+    assert response.status_code == 200, response.text
