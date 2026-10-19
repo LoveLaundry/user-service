@@ -232,6 +232,27 @@ def login(payload: LoginPayload, repo: UserRepository = Depends(get_repository))
             detail="This account has been deactivated. Contact an administrator.",
         )
 
+    # A deployment created before the platform role existed has no platform
+    # administrator, so nobody could register the first laundry. Promote the
+    # owner account once, at login: the earliest ADMIN, and only while no
+    # platform administrator exists anywhere. Afterwards the flag is explicit.
+    if not user.get("platform_admin") and str(role).upper() == "ADMIN":
+        try:
+            from .database.main_db import users_collection
+
+            if users_collection.count_documents({"platform_admin": True}) == 0:
+                first_admin = users_collection.find_one(
+                    {"role_id": "ADMIN"}, sort=[("created_at", 1), ("_id", 1)]
+                )
+                if first_admin and first_admin.get("auth_id") == user["auth_id"]:
+                    users_collection.update_one(
+                        {"_id": first_admin["_id"]}, {"$set": {"platform_admin": True}}
+                    )
+                    user = dict(user, platform_admin=True)
+        except Exception:
+            # Never block a sign-in because the promotion probe failed.
+            pass
+
     token_data = {
         "user_id": user["id"],
         "auth_id": user["auth_id"],
