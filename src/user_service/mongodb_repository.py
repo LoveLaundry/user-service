@@ -111,6 +111,8 @@ class MongoDBUserRepository(UserRepository):
             "auth_id": user_data["auth_id"],
             "password": hashed_password,
             "status": user_data.get("status", "unset"),
+            "platform_admin": bool(user_data.get("platform_admin", False)),
+            "laundries": user_data.get("laundries") or [],
             "public_key": user_data.get("public_key"),
             "key_version": user_data.get("key_version", 1),
             "permissions": user_data.get("permissions"),

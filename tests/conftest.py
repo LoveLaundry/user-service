@@ -25,6 +25,7 @@ COLLECTION_NAMES = [
     "sync_queue_collection",
     "sync_status_collection",
     "sync_logs_collection",
+    "laundries_collection",
 ]
 
 # Modules whose module-level collection bindings must point at the mock.
@@ -37,12 +38,14 @@ DEPENDENT_MODULES = [
     "user_service.services.verification_service",
     "user_service.services.synchronization_service",
     "user_service.mongodb_repository",
+    "user_service.routers.laundries",
     "user_service.main",
 ]
 
 # (module, attribute) pairs that must all resolve to the mock database.
 GUARDED_HANDLES = [
     ("user_service.mongodb_repository", "users_collection"),
+    ("user_service.routers.laundries", "laundries_collection"),
     ("user_service.repositories.main_repository", "sync_queue_collection"),
     ("user_service.repositories.main_repository", "sync_status_collection"),
     ("user_service.services.synchronization_service", "sync_queue_collection"),

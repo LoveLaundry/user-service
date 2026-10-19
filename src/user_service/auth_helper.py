@@ -89,6 +89,10 @@ def get_current_user(credentials=Security(security)) -> dict:
             payload["role"] = fresh_role
         payload["status"] = fresh.get("status")
         payload["user_name"] = fresh.get("user_name") or payload.get("user_name")
+        # The tenant registry is gated on this flag, so it must come from the
+        # database rather than the token snapshot: revoking it takes effect on
+        # the next request instead of when the token expires.
+        payload["platform_admin"] = bool(fresh.get("platform_admin"))
 
     return payload
 

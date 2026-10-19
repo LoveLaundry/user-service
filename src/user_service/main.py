@@ -102,6 +102,8 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
+from .routers.laundries import router as laundries_router  # noqa: E402
+app.include_router(laundries_router)
 app.include_router(admin_database_router)
 
 
@@ -236,6 +238,7 @@ def login(payload: LoginPayload, repo: UserRepository = Depends(get_repository))
         "user_name": user["user_name"],
         "role": role,
         "status": user["status"],
+        "platform_admin": bool(user.get("platform_admin")),
         # Tenant claims every resource service trusts. Built in one place so
         # login, bootstrap and switching cannot drift.
         **build_claims(user, payload.laundry_id),
@@ -244,6 +247,7 @@ def login(payload: LoginPayload, repo: UserRepository = Depends(get_repository))
     user_response = {k: v for k, v in user.items() if k != "password"}
     user_response["laundries"] = effective_memberships(user)
     user_response["role_id"] = role
+    user_response["platform_admin"] = bool(user.get("platform_admin"))
 
     token = create_access_token(token_data)
     return {
@@ -289,6 +293,9 @@ def bootstrap_first_admin(payload: BootstrapPayload, repo: UserRepository = Depe
                 "email": payload.email.strip() if payload.email else None,
                 "role_id": "ADMIN",
                 "status": "active",
+                # The first account owns the platform: only a platform
+                # administrator may register or enter other laundries.
+                "platform_admin": True,
             }
         )
     except HTTPException:
@@ -302,11 +309,13 @@ def bootstrap_first_admin(payload: BootstrapPayload, repo: UserRepository = Depe
         "user_name": user["user_name"],
         "role": "ADMIN",
         "status": user.get("status"),
+        "platform_admin": True,
         **build_claims(user),
     }
     user_response = {k: v for k, v in user.items() if k != "password"}
     user_response["role_id"] = "ADMIN"
     user_response["laundries"] = effective_memberships(user)
+    user_response["platform_admin"] = True
     return {
         "access_token": create_access_token(token_data),
         "token_type": "bearer",

@@ -14,6 +14,9 @@ _db = get_database(ROLE_MAIN)
 users_collection: Collection = _db.get_collection("users")
 
 # Sync infrastructure collections live alongside business data in MAIN.
+# Laundry registry (tenants). One document per independent business.
+laundries_collection: Collection = _db.get_collection("laundries")
+
 sync_status_collection: Collection = _db.get_collection("sync_status")
 sync_queue_collection: Collection = _db.get_collection("sync_queue")
 sync_logs_collection: Collection = _db.get_collection("sync_logs")
@@ -28,6 +31,9 @@ def ensure_indexes():
     users_collection.create_index("mobile_number_search", sparse=True)
     users_collection.create_index("employee_id", sparse=True)
     users_collection.create_index("created_at")
+    laundries_collection.create_index("laundry_id", unique=True)
+    laundries_collection.create_index("status")
+    laundries_collection.create_index("name")
 
     # Sync infrastructure indexes
     sync_status_collection.create_index([("entity", 1), ("record_id", 1)], unique=True)
