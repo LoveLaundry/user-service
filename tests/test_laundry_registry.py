@@ -59,9 +59,9 @@ def _register(client, token, laundry_id="acme", name="Acme Laundry"):
     )
 
 
-def test_tenant_admin_cannot_reach_the_registry(client, mocked_db):
-    """An ADMIN runs one laundry; they must not create or list others."""
-    _, token = _seed_user(mocked_db, "tenantadmin", platform_admin=False)
+def test_tenant_manager_cannot_reach_the_registry(client, mocked_db):
+    """A laundry-side manager must not create or list other laundries."""
+    _, token = _seed_user(mocked_db, "tenantmanager", platform_admin=False, role="MANAGER")
 
     listed = client.get("/laundries", headers=_auth(token))
     created = _register(client, token, "rogue", "Rogue Laundry")
@@ -156,3 +156,22 @@ def test_membership_listing_reports_the_roster(client, mocked_db):
     auth_ids = {m["auth_id"] for m in roster.json()}
     assert "washer" in auth_ids
     assert all(m["laundry_id"] == "acme" for m in roster.json())
+
+
+def test_admin_is_a_platform_operator_by_default(client, mocked_db):
+    """An ADMIN created before the registry existed can still register one."""
+    _, token = _seed_user(mocked_db, "legacyadmin", platform_admin=False, role="ADMIN")
+
+    assert client.get("/laundries", headers=_auth(token)).status_code == 200
+    assert _register(client, token, "acme", "Acme").status_code == 201
+
+
+def test_strict_mode_demands_the_explicit_flag(client, mocked_db, monkeypatch):
+    """With several laundries in one deployment, ADMIN alone must not suffice."""
+    monkeypatch.setenv("PLATFORM_ADMIN_STRICT", "1")
+    _, token = _seed_user(mocked_db, "legacyadmin", platform_admin=False, role="ADMIN")
+
+    assert client.get("/laundries", headers=_auth(token)).status_code == 403
+
+    _, flagged = _seed_user(mocked_db, "operator", platform_admin=True, role="ADMIN")
+    assert client.get("/laundries", headers=_auth(flagged)).status_code == 200

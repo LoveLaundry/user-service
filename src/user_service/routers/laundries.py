@@ -71,13 +71,32 @@ def _serialize(doc: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _strict_platform_admin() -> bool:
+    """Whether the registry demands the explicit flag.
+
+    Default (off): an ``ADMIN`` is the operator of this deployment and manages
+    the registry. That is what makes the feature usable out of the box — an
+    account created before the registry existed still works without a manual
+    database edit.
+
+    Set ``PLATFORM_ADMIN_STRICT=1`` once this deployment hosts several
+    independent laundries whose own owners also hold ``ADMIN``: from then on
+    only the explicit ``platform_admin`` flag grants registry access.
+    """
+    return os.getenv("PLATFORM_ADMIN_STRICT", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def require_platform_admin(current_user: dict = Depends(get_current_user)) -> dict:
     """Gate for the tenant registry.
 
-    ``get_current_user`` already re-reads the account, so a revoked flag takes
-    effect on the next request rather than when the token expires.
+    ``get_current_user`` already re-reads the account, so a revoked flag or a
+    demotion takes effect on the next request rather than when the token expires.
     """
-    if not current_user.get("platform_admin"):
+    role = str(current_user.get("role") or "").upper()
+    allowed = bool(current_user.get("platform_admin")) or (
+        role == "ADMIN" and not _strict_platform_admin()
+    )
+    if not allowed:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Platform administrator access required",
