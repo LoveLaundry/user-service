@@ -20,7 +20,16 @@ def client(mocked_db):
     return TestClient(app)
 
 
-def _seed_user(db, auth_id: str, *, platform_admin: bool = False, role: str = "ADMIN") -> tuple:
+def _seed_user(
+    db,
+    auth_id: str,
+    *,
+    platform_admin: bool = False,
+    role: str = "ADMIN",
+    laundries: list | None = None,
+    laundry_id: str | None = None,
+    support_entry: bool = False,
+) -> tuple:
     result = db["users_collection"].insert_one(
         encrypt_dict(
         {
@@ -29,7 +38,7 @@ def _seed_user(db, auth_id: str, *, platform_admin: bool = False, role: str = "A
             "role_id": role,
             "status": "active",
             "platform_admin": platform_admin,
-            "laundries": [],
+            "laundries": laundries or [],
         },
         SENSITIVE_FIELDS,
         )
@@ -42,6 +51,9 @@ def _seed_user(db, auth_id: str, *, platform_admin: bool = False, role: str = "A
             "role": role,
             "status": "active",
             "platform_admin": platform_admin,
+            "laundries": laundries or [],
+            "laundry_id": laundry_id or "",
+            "support_entry": support_entry,
         }
     )
     return str(result.inserted_id), token
@@ -184,3 +196,112 @@ def test_platform_admin_role_can_list_users(client, mocked_db):
     response = client.get("/users", headers=_auth(token))
 
     assert response.status_code == 200, response.text
+
+
+def test_tenant_admin_membership_management_is_scoped_to_active_laundry(client, mocked_db):
+    _, token = _seed_user(
+        mocked_db,
+        "acmeadmin",
+        role="ADMIN",
+        laundries=[{"id": "acme", "status": "ACTIVE"}],
+        laundry_id="acme",
+    )
+    target_id, _ = _seed_user(
+        mocked_db,
+        "member",
+        role="CASHIER",
+        laundries=[
+            {"id": "acme", "status": "ACTIVE"},
+            {"id": "globex", "status": "ACTIVE"},
+        ],
+    )
+    headers = _auth(token)
+
+    listed = client.get(f"/users/{target_id}/laundries", headers=headers)
+    assert listed.status_code == 200
+    assert [entry["id"] for entry in listed.json()["laundries"]] == ["acme"]
+
+    assert client.post(
+        f"/users/{target_id}/laundries",
+        json={"laundry_id": "globex"},
+        headers=headers,
+    ).status_code == 403
+    assert client.patch(
+        f"/users/{target_id}/laundries/globex",
+        json={"status": "SUSPENDED"},
+        headers=headers,
+    ).status_code == 403
+    assert client.delete(
+        f"/users/{target_id}/laundries/globex",
+        headers=headers,
+    ).status_code == 403
+
+    stored = mocked_db["users_collection"].find_one({"auth_id": "member"})
+    assert [entry["id"] for entry in stored["laundries"]] == ["acme", "globex"]
+
+
+def test_platform_admin_can_manage_memberships_across_laundries(client, mocked_db):
+    _, token = _seed_user(mocked_db, "platformadmin", platform_admin=True)
+    target_id, _ = _seed_user(
+        mocked_db,
+        "member",
+        role="CASHIER",
+        laundries=[
+            {"id": "acme", "status": "ACTIVE"},
+            {"id": "globex", "status": "ACTIVE"},
+        ],
+    )
+
+    listed = client.get(f"/users/{target_id}/laundries", headers=_auth(token))
+    assert listed.status_code == 200
+    assert {entry["id"] for entry in listed.json()["laundries"]} == {"acme", "globex"}
+
+    granted = client.post(
+        f"/users/{target_id}/laundries",
+        json={"laundry_id": "initech"},
+        headers=_auth(token),
+    )
+    assert granted.status_code == 201, granted.text
+    assert {entry["id"] for entry in granted.json()["laundries"]} == {
+        "acme", "globex", "initech"
+    }
+
+
+def test_support_entry_membership_management_is_limited_to_selected_laundry(client, mocked_db):
+    _, token = _seed_user(
+        mocked_db,
+        "supportadmin",
+        platform_admin=True,
+        laundries=[{"id": "acme", "status": "ACTIVE"}],
+        laundry_id="acme",
+        support_entry=True,
+    )
+    target_id, _ = _seed_user(
+        mocked_db,
+        "member",
+        role="CASHIER",
+        laundries=[
+            {"id": "acme", "status": "ACTIVE"},
+            {"id": "globex", "status": "ACTIVE"},
+        ],
+    )
+    headers = _auth(token)
+
+    listed = client.get(f"/users/{target_id}/laundries", headers=headers)
+    assert listed.status_code == 200
+    assert [entry["id"] for entry in listed.json()["laundries"]] == ["acme"]
+
+    assert client.post(
+        f"/users/{target_id}/laundries",
+        json={"laundry_id": "globex"},
+        headers=headers,
+    ).status_code == 403
+    assert client.patch(
+        f"/users/{target_id}/laundries/globex",
+        json={"status": "SUSPENDED"},
+        headers=headers,
+    ).status_code == 403
+    assert client.delete(
+        f"/users/{target_id}/laundries/globex",
+        headers=headers,
+    ).status_code == 403

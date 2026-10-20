@@ -38,6 +38,7 @@ from .database.connection_manager import close_all
 from .security import apply_security, insecure_flags
 from .routers.admin_database import router as admin_database_router
 from .services import synchronization_service
+from .tenancy import resolve_laundry_id
 
 
 import logging
@@ -602,36 +603,60 @@ def _persist_memberships(repo: UserRepository, user_id: Union[int, str], entries
     return entries
 
 
-@app.get("/users/{user_id}/laundries", dependencies=[Depends(require_role(["ADMIN"]))])
+def _membership_admin_scope(current_user: dict) -> str | None:
+    """Return the laundry scope for tenant admins and support-entry sessions."""
+    if current_user.get("support_entry"):
+        return resolve_laundry_id(current_user)
+    role = str(current_user.get("role") or "").upper()
+    if current_user.get("platform_admin") or role == "PLATFORM_ADMIN":
+        return None
+    return resolve_laundry_id(current_user)
+
+
+def _require_membership_scope(scope: str | None, laundry_id: str) -> None:
+    if scope is not None and laundry_id != scope:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only manage memberships in your active laundry",
+        )
+
+
+@app.get("/users/{user_id}/laundries")
 def list_memberships(
     user_id: Union[int, str],
+    current_user: dict = Depends(require_role(["ADMIN"])),
     repo: UserRepository = Depends(get_repository),
 ):
+    scope = _membership_admin_scope(current_user)
     user = _load_user(repo, _coerce_user_id(user_id))
+    entries = effective_memberships(user)
+    visible_entries = entries if scope is None else [
+        entry for entry in entries if entry["id"] == scope
+    ]
+    stored_ids = {entry["id"] for entry in stored_memberships(user)}
     return {
         "user_id": str(user.get("id")),
-        "laundries": effective_memberships(user),
-        "stored": bool(stored_memberships(user)),
+        "laundries": visible_entries,
+        "stored": any(entry["id"] in stored_ids for entry in visible_entries),
     }
 
 
-@app.post(
-    "/users/{user_id}/laundries",
-    status_code=201,
-    dependencies=[Depends(require_role(["ADMIN"]))],
-)
+@app.post("/users/{user_id}/laundries", status_code=201)
 def grant_membership(
     user_id: Union[int, str],
     payload: LaundryGrantPayload,
+    current_user: dict = Depends(require_role(["ADMIN"])),
     repo: UserRepository = Depends(get_repository),
 ):
     status = str(payload.status or ACTIVE).strip().upper()
     if status not in VALID_STATUSES:
         raise HTTPException(status_code=400, detail=f"status must be one of {sorted(VALID_STATUSES)}")
+    slug = normalize_laundry_id(payload.laundry_id)
+    _require_membership_scope(_membership_admin_scope(current_user), slug)
     user = _load_user(repo, _coerce_user_id(user_id))
     entries = grant(
         user,
-        payload.laundry_id,
+        slug,
         name=payload.name,
         role=payload.role,
         status=status,
@@ -639,20 +664,19 @@ def grant_membership(
     return {"laundries": _persist_memberships(repo, _coerce_user_id(user_id), entries)}
 
 
-@app.patch(
-    "/users/{user_id}/laundries/{laundry_id}",
-    dependencies=[Depends(require_role(["ADMIN"]))],
-)
+@app.patch("/users/{user_id}/laundries/{laundry_id}")
 def set_membership_status(
     user_id: Union[int, str],
     laundry_id: str,
     payload: LaundryStatusPayload,
+    current_user: dict = Depends(require_role(["ADMIN"])),
     repo: UserRepository = Depends(get_repository),
 ):
     status = str(payload.status or "").strip().upper()
     if status not in VALID_STATUSES:
         raise HTTPException(status_code=400, detail=f"status must be one of {sorted(VALID_STATUSES)}")
     slug = normalize_laundry_id(laundry_id)
+    _require_membership_scope(_membership_admin_scope(current_user), slug)
     user = _load_user(repo, _coerce_user_id(user_id))
     if not any(entry["id"] == slug for entry in effective_memberships(user)):
         raise HTTPException(status_code=404, detail="Membership not found")
@@ -660,17 +684,17 @@ def set_membership_status(
     return {"laundries": _persist_memberships(repo, _coerce_user_id(user_id), entries)}
 
 
-@app.delete(
-    "/users/{user_id}/laundries/{laundry_id}",
-    dependencies=[Depends(require_role(["ADMIN"]))],
-)
+@app.delete("/users/{user_id}/laundries/{laundry_id}")
 def revoke_membership(
     user_id: Union[int, str],
     laundry_id: str,
+    current_user: dict = Depends(require_role(["ADMIN"])),
     repo: UserRepository = Depends(get_repository),
 ):
+    slug = normalize_laundry_id(laundry_id)
+    _require_membership_scope(_membership_admin_scope(current_user), slug)
     user = _load_user(repo, _coerce_user_id(user_id))
-    entries = revoke(user, laundry_id)
+    entries = revoke(user, slug)
     _persist_memberships(repo, _coerce_user_id(user_id), entries)
     return {"message": "Membership revoked", "laundries": entries}
 
