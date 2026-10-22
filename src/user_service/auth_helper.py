@@ -4,6 +4,13 @@ from fastapi import HTTPException, Security, status
 from fastapi.security import HTTPBearer
 import jwt
 
+from dotenv import load_dotenv
+
+# pydantic-settings reads .env into its own model, but it does NOT export the
+# values into os.environ, so anything that reads the environment directly
+# (as this module does) needs the file loaded explicitly.
+load_dotenv()
+
 _jwt_secret = os.getenv("JWT_SECRET")
 if not _jwt_secret:
     raise RuntimeError("FATAL: JWT_SECRET environment variable is not set. Refusing to start.")
