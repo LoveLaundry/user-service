@@ -33,6 +33,16 @@ from .memberships import (
     revoke,
     stored_memberships,
 )
+from .client_accounts import (
+    authenticate as authenticate_client,
+    build_client_token,
+    client_scope_of,
+    create_client_account,
+    get_client_session,
+    list_for_laundry as list_client_accounts,
+    public_view as client_public_view,
+    set_status as set_client_status,
+)
 from .database.main_db import ensure_indexes
 from .database.connection_manager import close_all
 from .security import apply_security, insecure_flags
@@ -724,3 +734,108 @@ def switch_laundry(
         "laundry_id": claims["laundry_id"],
         "laundries": claims["laundries"],
     }
+
+
+# ── Hotel client portal auth ────────────────────────────────────────────────────
+# A hotel is a customer of a laundry, not a member of its staff, so client
+# sessions are issued by their own endpoints and never carry a laundry
+# membership claim. See client_accounts.py for why that shape is the isolation
+# mechanism: every staff endpoint keeps rejecting these tokens untouched.
+
+class ClientLoginPayload(BaseModel):
+    auth_id: str
+    password: str
+    # Only needed when the same login exists under more than one laundry.
+    laundry_id: str | None = None
+
+
+class ClientCreatePayload(BaseModel):
+    client_name: str
+    auth_id: str
+    user_name: str
+    password: str
+    email: str | None = None
+    role: str | None = "HOTEL_MANAGER"
+    # Platform admins must name the target laundry; tenant admins default to
+    # their active one and cannot reach another tenant.
+    laundry_id: str | None = None
+
+
+class ClientStatusPayload(BaseModel):
+    status: str
+
+
+@app.post("/client/auth/login")
+def client_login(payload: ClientLoginPayload):
+    """Sign in a hotel user. Same generic error for unknown and wrong password."""
+    doc = authenticate_client(payload.auth_id, payload.password, payload.laundry_id)
+    if not doc:
+        raise HTTPException(status_code=400, detail="Invalid username or password")
+    return {
+        "access_token": build_client_token(doc),
+        "token_type": "bearer",
+        "client": client_public_view(doc),
+    }
+
+
+@app.get("/client/auth/status")
+def client_status(session: dict = Depends(get_client_session)):
+    """Live session check for the hotel app; never returns a password hash."""
+    scope = client_scope_of(session)
+    return {
+        "auth_id": session.get("auth_id"),
+        "user_name": session.get("user_name"),
+        "role_id": session.get("role"),
+        "status": session.get("status"),
+        "laundry_id": scope["laundry_id"],
+        "client_name": scope["client_name"],
+    }
+
+
+@app.get("/clients", dependencies=[Depends(require_role(["ADMIN"]))])
+def list_clients(
+    laundry_id: str | None = None,
+    current_user: dict = Depends(get_current_user),
+):
+    scope = _membership_admin_scope(current_user)
+    target = laundry_id or scope or resolve_laundry_id(current_user)
+    slug = normalize_laundry_id(target)
+    _require_membership_scope(scope, slug)
+    return {"items": list_client_accounts(slug)}
+
+
+@app.post("/clients", status_code=201, dependencies=[Depends(require_role(["ADMIN"]))])
+def create_client(
+    payload: ClientCreatePayload,
+    current_user: dict = Depends(get_current_user),
+):
+    scope = _membership_admin_scope(current_user)
+    target = payload.laundry_id or scope or resolve_laundry_id(current_user)
+    slug = normalize_laundry_id(target)
+    _require_membership_scope(scope, slug)
+    doc = create_client_account(
+        laundry_id=slug,
+        client_name=payload.client_name,
+        auth_id=payload.auth_id,
+        user_name=payload.user_name,
+        password=payload.password,
+        email=payload.email,
+        role=payload.role or "HOTEL_MANAGER",
+    )
+    return client_public_view(doc)
+
+
+@app.patch("/clients/{client_id}/status", dependencies=[Depends(require_role(["ADMIN"]))])
+def update_client_status(
+    client_id: str,
+    payload: ClientStatusPayload,
+    current_user: dict = Depends(get_current_user),
+):
+    scope = _membership_admin_scope(current_user)
+    # Tenant admins may only touch their own clients; set_status is keyed on the
+    # account id, so the ownership check happens here.
+    if scope is not None:
+        owned = [c["id"] for c in list_client_accounts(scope)]
+        if client_id not in owned:
+            raise HTTPException(status_code=404, detail="Client account not found")
+    return set_client_status(client_id, payload.status)

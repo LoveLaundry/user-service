@@ -17,6 +17,11 @@ users_collection: Collection = _db.get_collection("users")
 # Laundry registry (tenants). One document per independent business.
 laundries_collection: Collection = _db.get_collection("laundries")
 
+# External hotel logins. Deliberately separate from `users`: a hotel is a
+# customer of a laundry, not a member of its staff, and its session must never
+# receive a laundry membership claim (see client_accounts.py).
+client_accounts_collection: Collection = _db.get_collection("client_accounts")
+
 sync_status_collection: Collection = _db.get_collection("sync_status")
 sync_queue_collection: Collection = _db.get_collection("sync_queue")
 sync_logs_collection: Collection = _db.get_collection("sync_logs")
@@ -34,6 +39,14 @@ def ensure_indexes():
     laundries_collection.create_index("laundry_id", unique=True)
     laundries_collection.create_index("status")
     laundries_collection.create_index("name")
+
+    # Client logins are scoped per laundry: the same hotel-brand login may exist
+    # under two different laundry businesses, but never twice inside one.
+    client_accounts_collection.create_index(
+        [("laundry_id", 1), ("auth_id", 1)], unique=True
+    )
+    client_accounts_collection.create_index([("laundry_id", 1), ("client_name", 1)])
+    client_accounts_collection.create_index("status")
 
     # Sync infrastructure indexes
     sync_status_collection.create_index([("entity", 1), ("record_id", 1)], unique=True)

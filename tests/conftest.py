@@ -1,4 +1,4 @@
-"""Shared harness for user-service tests.
+﻿"""Shared harness for user-service tests.
 
 No real MongoDB instance is required. A ``mongomock`` database stands in for
 every MAIN / SECONDARY / LOCAL collection, patched onto the database modules
@@ -26,6 +26,7 @@ COLLECTION_NAMES = [
     "sync_status_collection",
     "sync_logs_collection",
     "laundries_collection",
+    "client_accounts_collection",
 ]
 
 # Modules whose module-level collection bindings must point at the mock.
@@ -39,6 +40,7 @@ DEPENDENT_MODULES = [
     "user_service.services.synchronization_service",
     "user_service.mongodb_repository",
     "user_service.routers.laundries",
+    "user_service.client_accounts",
     "user_service.main",
 ]
 
@@ -46,6 +48,7 @@ DEPENDENT_MODULES = [
 GUARDED_HANDLES = [
     ("user_service.mongodb_repository", "users_collection"),
     ("user_service.routers.laundries", "laundries_collection"),
+    ("user_service.client_accounts", "client_accounts_collection"),
     ("user_service.repositories.main_repository", "sync_queue_collection"),
     ("user_service.repositories.main_repository", "sync_status_collection"),
     ("user_service.services.synchronization_service", "sync_queue_collection"),
@@ -86,7 +89,7 @@ def _assert_no_live_clients() -> None:
     """Fail loudly if any module still holds a real MongoDB collection.
 
     A stale handle points at whatever ``.env`` names, which in development is
-    the PRODUCTION Atlas cluster — a stray write in a test would mutate live
+    the PRODUCTION Atlas cluster â€” a stray write in a test would mutate live
     data. Assert every cached handle belongs to the mongomock database.
     """
     prefix = f"{MOCK_DB_NAME}."
