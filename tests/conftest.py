@@ -1,4 +1,4 @@
-﻿"""Shared harness for user-service tests.
+"""Shared harness for user-service tests.
 
 No real MongoDB instance is required. A ``mongomock`` database stands in for
 every MAIN / SECONDARY / LOCAL collection, patched onto the database modules
@@ -15,6 +15,11 @@ from mongomock import MongoClient
 # Must be set before user_service.config is imported: DB_TYPE is derived from
 # DATABASE_URL at import time and these tests exercise the MongoDB backend.
 os.environ.setdefault("DATABASE_URL", "mongodb://localhost:27017")
+# Pin every Mongo role at localhost. `auth_helper` calls load_dotenv() at import
+# time, so without these the .env Atlas URI can leak into os.environ and a test
+# run tries to resolve the production cluster (and hangs on DNS).
+for _k in ("MONGODB_MAIN_URI", "MONGODB_SECONDARY_URI", "MONGODB_LOCAL_URI"):
+    os.environ.setdefault(_k, "mongodb://localhost:27017")
 os.environ.setdefault("JWT_SECRET", "test-secret-not-a-real-credential")
 os.environ.setdefault("MASTER_KEY", "test-master-key-not-real")
 
@@ -41,6 +46,7 @@ DEPENDENT_MODULES = [
     "user_service.mongodb_repository",
     "user_service.routers.laundries",
     "user_service.client_accounts",
+    "user_service.client_associations",
     "user_service.main",
 ]
 
@@ -49,6 +55,7 @@ GUARDED_HANDLES = [
     ("user_service.mongodb_repository", "users_collection"),
     ("user_service.routers.laundries", "laundries_collection"),
     ("user_service.client_accounts", "client_accounts_collection"),
+    ("user_service.client_associations", "client_accounts_collection"),
     ("user_service.repositories.main_repository", "sync_queue_collection"),
     ("user_service.repositories.main_repository", "sync_status_collection"),
     ("user_service.services.synchronization_service", "sync_queue_collection"),

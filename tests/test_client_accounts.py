@@ -1,4 +1,4 @@
-﻿"""Hotel client accounts and the isolation contract they rely on.
+"""Hotel client accounts and the isolation contract they rely on.
 
 The critical property under test is negative: a hotel session must be unable to
 touch staff endpoints. That is guaranteed by the token **lacking** ``laundry_id``
@@ -49,6 +49,7 @@ def test_client_token_carries_no_laundry_membership_claim():
     assert claims["client_scope"] == {
         "laundry_id": "lovelaundry",
         "client_name": "Cinnamon Grand",
+        "client_type": "HOTEL",
     }
     # Absent, not empty: resource services fail closed on a missing claim.
     assert "laundry_id" not in claims

@@ -33,6 +33,10 @@ from .memberships import (
     revoke,
     stored_memberships,
 )
+from .client_associations import (
+    list_associations as list_client_associations,
+    switch_to as switch_client_laundry,
+)
 from .client_accounts import (
     authenticate as authenticate_client,
     build_client_token,
@@ -745,8 +749,10 @@ def switch_laundry(
 class ClientLoginPayload(BaseModel):
     auth_id: str
     password: str
-    # Only needed when the same login exists under more than one laundry.
+    # Only needed when the same login exists under more than one laundry, or
+    # when one login is registered on both sides of the same laundry.
     laundry_id: str | None = None
+    client_type: str | None = None
 
 
 class ClientCreatePayload(BaseModel):
@@ -755,7 +761,8 @@ class ClientCreatePayload(BaseModel):
     user_name: str
     password: str
     email: str | None = None
-    role: str | None = "HOTEL_MANAGER"
+    role: str | None = None
+    client_type: str | None = "HOTEL"
     # Platform admins must name the target laundry; tenant admins default to
     # their active one and cannot reach another tenant.
     laundry_id: str | None = None
@@ -768,7 +775,9 @@ class ClientStatusPayload(BaseModel):
 @app.post("/client/auth/login")
 def client_login(payload: ClientLoginPayload):
     """Sign in a hotel user. Same generic error for unknown and wrong password."""
-    doc = authenticate_client(payload.auth_id, payload.password, payload.laundry_id)
+    doc = authenticate_client(
+        payload.auth_id, payload.password, payload.laundry_id, payload.client_type
+    )
     if not doc:
         raise HTTPException(status_code=400, detail="Invalid username or password")
     return {
@@ -789,19 +798,21 @@ def client_status(session: dict = Depends(get_client_session)):
         "status": session.get("status"),
         "laundry_id": scope["laundry_id"],
         "client_name": scope["client_name"],
+        "client_type": scope["client_type"],
     }
 
 
 @app.get("/clients", dependencies=[Depends(require_role(["ADMIN"]))])
 def list_clients(
     laundry_id: str | None = None,
+    client_type: str | None = None,
     current_user: dict = Depends(get_current_user),
 ):
     scope = _membership_admin_scope(current_user)
     target = laundry_id or scope or resolve_laundry_id(current_user)
     slug = normalize_laundry_id(target)
     _require_membership_scope(scope, slug)
-    return {"items": list_client_accounts(slug)}
+    return {"items": list_client_accounts(slug, client_type)}
 
 
 @app.post("/clients", status_code=201, dependencies=[Depends(require_role(["ADMIN"]))])
@@ -820,7 +831,8 @@ def create_client(
         user_name=payload.user_name,
         password=payload.password,
         email=payload.email,
-        role=payload.role or "HOTEL_MANAGER",
+        role=payload.role,
+        client_type=payload.client_type or "HOTEL",
     )
     return client_public_view(doc)
 
@@ -839,3 +851,40 @@ def update_client_status(
         if client_id not in owned:
             raise HTTPException(status_code=404, detail="Client account not found")
     return set_client_status(client_id, payload.status)
+
+
+class ClientSwitchPayload(BaseModel):
+    laundry_id: str
+
+
+@app.get("/client/auth/laundries")
+def client_laundries(session: dict = Depends(get_client_session)):
+    """Every laundry this login may enter on its own side of the business.
+
+    A person registered as a shop under two laundries sees exactly those two.
+    The same username registered as a hotel elsewhere is a different account and
+    is never listed here.
+    """
+    scope = client_scope_of(session)
+    items = list_client_associations(session.get("auth_id"), scope["client_type"])
+    return {
+        "current": scope["laundry_id"],
+        "client_type": scope["client_type"],
+        "count": len(items),
+        "items": items,
+    }
+
+
+@app.post("/client/auth/switch")
+def client_switch(payload: ClientSwitchPayload, session: dict = Depends(get_client_session)):
+    """Re-issue this session for another laundry the same login belongs to.
+
+    The token is replaced, not widened: it still carries exactly one scope, so
+    switching can never make two laundries readable at once.
+    """
+    doc = switch_client_laundry(session, payload.laundry_id)
+    return {
+        "access_token": build_client_token(doc),
+        "token_type": "bearer",
+        "client": client_public_view(doc),
+    }

@@ -46,14 +46,23 @@ from fastapi import HTTPException, Security
 # test run would open a connection to the production cluster instead of the
 # local/mocked one. Importing the database handle first makes config resolve the
 # same URI the application itself would use.
-from .database.main_db import client_accounts_collection
+from .database.main_db import client_accounts_collection, laundries_collection
 
 from .auth_helper import DISABLED_STATUSES, create_access_token, security, verify_token
 from .memberships import ACTIVE, ARCHIVED, SUSPENDED, VALID_STATUSES, normalize_laundry_id
 
-# Roles a hotel-side client may hold. Managers see money and invoices; the
-# admin role additionally manages other client users of the same hotel.
-CLIENT_ROLES = {"HOTEL_ADMIN", "HOTEL_MANAGER"}
+# A client account belongs to one of two sides of the business, and the side is
+# part of the identity rather than a UI concern: it decides which portal the
+# token may read. A shop login must never resolve to hotel data, and vice versa.
+CLIENT_TYPES = {"HOTEL": "SHOP", "SHOP": "HOTEL"}  # value is the opposite side
+
+# Roles a client may hold, per side. There is deliberately no role that spans
+# both sides: cross-side access is not expressible, so it cannot be granted by
+# accident through a role string.
+CLIENT_ROLES = {
+    "HOTEL": {"HOTEL_ADMIN", "HOTEL_MANAGER"},
+    "SHOP": {"SHOP_ADMIN", "SHOP_STAFF"},
+}
 
 CLIENT_NAME_MAX = 120
 _AUTH_ID_RE = re.compile(r"^[A-Za-z0-9._@-]{3,64}$")
@@ -102,12 +111,29 @@ def normalize_auth_id(value: Any) -> str:
     return auth_id
 
 
-def normalize_role(value: Any) -> str:
-    role = str(value or "").strip().upper()
-    if role not in CLIENT_ROLES:
+def normalize_client_type(value: Any, default: str = "HOTEL") -> str:
+    """Validate the side of the business a client account belongs to.
+
+    Accounts created before this field existed are hotels, so ``HOTEL`` is the
+    default. That default is why the field can be added without a data
+    migration.
+    """
+    client_type = str(value or default).strip().upper()
+    if client_type not in CLIENT_ROLES:
         raise HTTPException(
             status_code=400,
-            detail=f"role must be one of {sorted(CLIENT_ROLES)}",
+            detail=f"client_type must be one of {sorted(CLIENT_ROLES)}",
+        )
+    return client_type
+
+
+def normalize_role(value: Any, client_type: str = "HOTEL") -> str:
+    allowed = CLIENT_ROLES[normalize_client_type(client_type)]
+    role = str(value or "").strip().upper()
+    if role not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"role for a {client_type} account must be one of {sorted(allowed)}",
         )
     return role
 
@@ -139,15 +165,23 @@ def create_client_account(
     user_name: Any,
     password: str,
     email: Optional[str] = None,
-    role: Any = "HOTEL_MANAGER",
+    role: Any = None,
+    client_type: Any = "HOTEL",
     status: Any = ACTIVE,
 ) -> Dict[str, Any]:
-    """Create one hotel client login. Idempotent-safe: duplicates raise 409."""
+    """Create one client login for one laundry.
+
+    The same login may be registered under several laundry businesses — that is
+    the multi-tenant association we need — but never twice inside one laundry,
+    because a token resolves to exactly one (laundry, side, client) triple.
+    """
     slug = normalize_laundry_id(laundry_id)
     name = normalize_client_name(client_name)
     login = normalize_auth_id(auth_id)
     display = str(user_name or "").strip() or login
-    normalized_role = normalize_role(role)
+    side = normalize_client_type(client_type)
+    default_role = "HOTEL_MANAGER" if side == "HOTEL" else "SHOP_STAFF"
+    normalized_role = normalize_role(role or default_role, side)
     normalized_status = normalize_status(status)
 
     if client_accounts_collection.find_one({"laundry_id": slug, "auth_id": login}):
@@ -158,6 +192,7 @@ def create_client_account(
 
     doc = {
         "laundry_id": slug,
+        "client_type": side,
         "client_name": name,
         "auth_id": login,
         "user_name": display[:120],
@@ -173,14 +208,41 @@ def create_client_account(
     return doc
 
 
-def authenticate(
-    auth_id: Any, password: str, laundry_id: Any | None = None
-) -> Optional[Dict[str, Any]]:
-    """Return the matching client account, or None.
+def _password_ok(doc: Dict[str, Any], password: str) -> bool:
+    if "password" not in doc:
+        return False
+    try:
+        return bcrypt.checkpw(
+            str(password or "").encode("utf-8"), str(doc["password"]).encode("utf-8")
+        )
+    except ValueError:
+        return False
 
-    ``laundry_id`` narrows the lookup when the same hotel-brand login is serviced
-    by more than one laundry business. Callers must treat None and a wrong
-    password identically.
+
+def _laundry_label(slug: str) -> str:
+    """Display name for a laundry, falling back to its slug."""
+    try:
+        found = laundries_collection.find_one({"laundry_id": slug})
+    except Exception:
+        found = None
+    name = str((found or {}).get("name") or "").strip()
+    return name or slug
+
+
+def authenticate(
+    auth_id: Any,
+    password: str,
+    laundry_id: Any | None = None,
+    client_type: Any | None = None,
+) -> Optional[Dict[str, Any]]:
+    """Return the client account this attempt may open, or None.
+
+    One login can be registered under several laundries. When it is, this
+    refuses to guess: the caller must say which laundry, and a 409 carries the
+    choices. Picking the first match silently would sign a user into another
+    company's books, which is exactly the failure this guards against.
+
+    Callers must treat ``None`` and a wrong password identically.
     """
     login = str(auth_id or "").strip()
     if not login:
@@ -189,28 +251,48 @@ def authenticate(
     query: Dict[str, Any] = {"auth_id": login}
     if laundry_id:
         query["laundry_id"] = normalize_laundry_id(laundry_id)
+    if client_type:
+        query["client_type"] = normalize_client_type(client_type)
 
-    doc = client_accounts_collection.find_one(query)
-
-    if not doc or "password" not in doc:
+    candidates = list(client_accounts_collection.find(query).limit(50))
+    if not candidates:
+        # Burn a comparison so an unknown login costs the same as a wrong
+        # password and cannot be used to enumerate accounts.
         try:
             bcrypt.checkpw(str(password or "").encode("utf-8"), _DUMMY_PASSWORD_HASH.encode("utf-8"))
         except ValueError:
             pass
         return None
 
-    try:
-        if not bcrypt.checkpw(
-            str(password or "").encode("utf-8"), str(doc["password"]).encode("utf-8")
-        ):
-            return None
-    except ValueError:
+    verified = [doc for doc in candidates if _password_ok(doc, password)]
+    if not verified:
         return None
 
+    if len(verified) > 1:
+        options = [
+            {
+                "laundry_id": doc.get("laundry_id"),
+                "laundry_name": _laundry_label(str(doc.get("laundry_id") or "")),
+                "client_type": normalize_client_type(doc.get("client_type")),
+                "client_name": doc.get("client_name"),
+            }
+            for doc in verified
+        ]
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "laundry_required",
+                "message": "This login is registered with more than one laundry. Choose one to continue.",
+                "laundries": options,
+            },
+        )
+
+    doc = verified[0]
     if _is_blocked(doc):
+        side = normalize_client_type(doc.get("client_type")).lower()
         raise HTTPException(
             status_code=403,
-            detail="This hotel account is inactive. Contact your laundry provider.",
+            detail=f"This {side} account is inactive. Contact your laundry provider.",
         )
     return doc
 
@@ -225,13 +307,14 @@ def build_client_token(doc: Dict[str, Any]) -> str:
         "user_id": str(doc.get("_id") or ""),
         "auth_id": doc["auth_id"],
         "user_name": doc.get("user_name") or doc["auth_id"],
-        "role": normalize_role(doc.get("role_id")),
+        "role": normalize_role(doc.get("role_id"), doc.get("client_type") or "HOTEL"),
         # False by construction: a client is never a platform administrator.
         "platform_admin": False,
         "token_kind": "client",
         "client_scope": {
             "laundry_id": normalize_laundry_id(doc.get("laundry_id")),
             "client_name": normalize_client_name(doc.get("client_name")),
+            "client_type": normalize_client_type(doc.get("client_type")),
         },
     }
     # Hotel staff sign in from shared front-desk machines, so the session is
@@ -244,6 +327,7 @@ def public_view(doc: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "id": str(doc.get("_id") or doc.get("id") or ""),
         "laundry_id": doc.get("laundry_id"),
+        "client_type": normalize_client_type(doc.get("client_type")),
         "client_name": doc.get("client_name"),
         "auth_id": doc.get("auth_id"),
         "user_name": doc.get("user_name"),
@@ -267,7 +351,11 @@ def get_client_session(credentials=Security(security)) -> Dict[str, Any]:
     if payload.get("token_kind") != "client" or not isinstance(scope, dict):
         raise HTTPException(status_code=403, detail="This endpoint requires a hotel account")
 
-    doc = client_accounts_collection.find_one({"auth_id": payload.get("auth_id")})
+    # Resolve the exact account, not merely the login: the same auth_id may
+    # exist under several laundries, and loading the wrong one would apply the
+    # wrong status and scope.
+    lookup = {"laundry_id": scope.get("laundry_id"), "auth_id": payload.get("auth_id")}
+    doc = client_accounts_collection.find_one(lookup)
     if not doc:
         raise HTTPException(status_code=401, detail="Account no longer exists")
     if _is_blocked(doc):
@@ -278,12 +366,15 @@ def get_client_session(credentials=Security(security)) -> Dict[str, Any]:
 
     # Live values win over the token snapshot, so a revoked/reassigned hotel
     # takes effect on the next request.
-    payload["role"] = normalize_role(doc.get("role_id"))
+    # The side must come from the stored account: validating a shop role
+    # against the hotel role set rejected every shop session with a 400.
+    payload["role"] = normalize_role(doc.get("role_id"), doc.get("client_type"))
     payload["status"] = doc.get("status")
     payload["user_name"] = doc.get("user_name") or payload.get("user_name")
     payload["client_scope"] = {
         "laundry_id": normalize_laundry_id(doc.get("laundry_id")),
         "client_name": normalize_client_name(doc.get("client_name")),
+        "client_type": normalize_client_type(doc.get("client_type")),
     }
     return payload
 
@@ -294,12 +385,21 @@ def client_scope_of(session: Dict[str, Any]) -> Dict[str, str]:
     return {
         "laundry_id": normalize_laundry_id(scope.get("laundry_id")),
         "client_name": normalize_client_name(scope.get("client_name")),
+        "client_type": normalize_client_type(scope.get("client_type")),
     }
 
 
-def list_for_laundry(laundry_id: Any) -> List[Dict[str, Any]]:
+def list_for_laundry(laundry_id: Any, client_type: Any | None = None) -> List[Dict[str, Any]]:
+    """Every client login a laundry owns, optionally filtered to one side.
+
+    A laundry's shop logins and hotel logins are listed together but never
+    mixed in the portal: the type is carried on each account, not inferred.
+    """
     slug = normalize_laundry_id(laundry_id)
-    cursor = client_accounts_collection.find({"laundry_id": slug}).sort("client_name", 1)
+    query: Dict[str, Any] = {"laundry_id": slug}
+    if client_type:
+        query["client_type"] = normalize_client_type(client_type)
+    cursor = client_accounts_collection.find(query).sort("client_name", 1)
     return [public_view(doc) for doc in cursor]
 
 
