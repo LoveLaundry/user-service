@@ -888,3 +888,52 @@ def client_switch(payload: ClientSwitchPayload, session: dict = Depends(get_clie
         "token_type": "bearer",
         "client": client_public_view(doc),
     }
+
+
+@app.post("/auth/refresh")
+def refresh_token(
+    current_user: dict = Depends(get_current_user),
+    repo: UserRepository = Depends(get_repository),
+):
+    """Re-issue a session token without re-entering the password.
+
+    Only the expiry moves. Every claim is rebuilt from the database, so a role
+    change, a disabled account or a revoked membership takes effect on refresh
+    instead of surviving inside a stale token until it expires.
+    """
+    user = _load_user(repo, _coerce_user_id(current_user.get("user_id")))
+    if not user or _is_blocked(user):
+        raise HTTPException(
+            status_code=403,
+            detail="This account is inactive. Contact an administrator.",
+        )
+
+    role = str(user["role_id"]).upper()
+    token_data = {
+        "user_id": user["id"],
+        "auth_id": user["auth_id"],
+        "user_name": user["user_name"],
+        "role": role,
+        "status": user["status"],
+        "platform_admin": bool(user.get("platform_admin"))
+        or role == "PLATFORM_ADMIN",
+        **build_claims(user, current_user.get("laundry_id")),
+    }
+    return {"access_token": create_access_token(token_data), "token_type": "bearer"}
+
+
+@app.post("/client/auth/refresh")
+def client_refresh_token(session: dict = Depends(get_client_session)):
+    """Re-issue a hotel or shop token, re-reading the account's live state.
+
+    switch_to() already loads the stored account for the session's current
+    laundry and refuses a suspended or missing one, so refreshing cannot
+    resurrect an account an administrator has just switched off.
+    """
+    scope = client_scope_of(session)
+    doc = switch_client_laundry(session, scope["laundry_id"])
+    return {
+        "access_token": build_client_token(doc),
+        "token_type": "bearer",
+        "client": client_public_view(doc),
+    }
