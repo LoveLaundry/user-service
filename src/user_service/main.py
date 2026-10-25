@@ -937,3 +937,69 @@ def client_refresh_token(session: dict = Depends(get_client_session)):
         "token_type": "bearer",
         "client": client_public_view(doc),
     }
+
+
+class ClientStaffCreatePayload(BaseModel):
+    auth_id: str
+    user_name: str
+    password: str
+    email: str | None = None
+    role: str | None = None
+
+
+@app.post("/client/staff", status_code=201)
+def create_client_staff(
+    payload: ClientStaffCreatePayload,
+    session: dict = Depends(get_client_session),
+):
+    """A hotel or shop administrator adds a colleague to their own account.
+
+    The new account is pinned to the administrator's laundry *and* customer
+    name, both taken from the token rather than the request body — otherwise an
+    administrator could enrol staff into somebody else's hotel. Only the staff
+    role of the same side can be granted; creating another administrator is
+    reserved for the laundry, so this endpoint cannot escalate privilege.
+    """
+    scope = client_scope_of(session)
+    actor_role = str(session.get("role") or "").upper()
+    if actor_role not in {"HOTEL_ADMIN", "SHOP_ADMIN"}:
+        raise HTTPException(
+            status_code=403,
+            detail="Only an account administrator can add staff",
+        )
+
+    side = scope["client_type"]
+    allowed = {"HOTEL_MANAGER"} if side == "HOTEL" else {"SHOP_STAFF"}
+    default_role = "HOTEL_MANAGER" if side == "HOTEL" else "SHOP_STAFF"
+    role = str(payload.role or default_role).upper()
+    if role not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail="A %s administrator can add %s accounts only"
+            % (side.title(), ", ".join(sorted(allowed))),
+        )
+
+    doc = create_client_account(
+        laundry_id=scope["laundry_id"],
+        client_name=scope["client_name"],
+        auth_id=payload.auth_id,
+        user_name=payload.user_name,
+        password=payload.password,
+        email=payload.email,
+        role=role,
+        client_type=side,
+    )
+    return client_public_view(doc)
+
+
+@app.get("/client/staff")
+def list_client_staff(session: dict = Depends(get_client_session)):
+    """Everyone enrolled under the caller's own customer account."""
+    scope = client_scope_of(session)
+    items = [
+        account
+        for account in list_client_accounts(scope["laundry_id"])
+        if str(account.get("client_name")) == scope["client_name"]
+        and str(account.get("client_type", "")).upper() == scope["client_type"]
+    ]
+    return {"items": items, "total": len(items)}
