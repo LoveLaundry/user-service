@@ -109,6 +109,24 @@ def get_current_user(credentials=Security(security)) -> dict:
     return payload
 
 
+def is_platform_admin(current_user: dict) -> bool:
+    """Return True if the user holds platform admin privileges."""
+    if not isinstance(current_user, dict):
+        return False
+    role = str(current_user.get("role") or "").strip().upper()
+    return bool(current_user.get("platform_admin")) or role == "PLATFORM_ADMIN"
+
+
+def require_platform_admin(current_user: dict = Security(get_current_user)) -> dict:
+    """FastAPI dependency to require platform administrator privileges."""
+    if not is_platform_admin(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Platform administrator access required",
+        )
+    return current_user
+
+
 def require_role(allowed_roles: list):
     """FastAPI dependency factory to validate roles.
 

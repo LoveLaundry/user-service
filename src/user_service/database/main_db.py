@@ -17,6 +17,10 @@ users_collection: Collection = _db.get_collection("users")
 # Laundry registry (tenants). One document per independent business.
 laundries_collection: Collection = _db.get_collection("laundries")
 
+# Hotel and Shop entity registries. First-class entities with their own administrators.
+hotels_collection: Collection = _db.get_collection("hotels")
+shops_collection: Collection = _db.get_collection("shops")
+
 # External hotel logins. Deliberately separate from `users`: a hotel is a
 # customer of a laundry, not a member of its staff, and its session must never
 # receive a laundry membership claim (see client_accounts.py).
@@ -40,6 +44,18 @@ def ensure_indexes():
     laundries_collection.create_index("status")
     laundries_collection.create_index("name")
 
+    # Hotel entity registry indexes
+    hotels_collection.create_index("hotel_id", unique=True)
+    hotels_collection.create_index("associated_laundry_id")
+    hotels_collection.create_index("status")
+    hotels_collection.create_index("name")
+
+    # Shop entity registry indexes
+    shops_collection.create_index("shop_id", unique=True)
+    shops_collection.create_index("associated_laundry_id")
+    shops_collection.create_index("status")
+    shops_collection.create_index("name")
+
     # Client logins are scoped per laundry: the same hotel-brand login may exist
     # under two different laundry businesses, but never twice inside one.
     client_accounts_collection.create_index(
@@ -47,6 +63,9 @@ def ensure_indexes():
     )
     client_accounts_collection.create_index([("laundry_id", 1), ("client_name", 1)])
     client_accounts_collection.create_index("status")
+    # New indexes for entity migration
+    client_accounts_collection.create_index("hotel_id", sparse=True)
+    client_accounts_collection.create_index("shop_id", sparse=True)
 
     # Sync infrastructure indexes
     sync_status_collection.create_index([("entity", 1), ("record_id", 1)], unique=True)

@@ -113,6 +113,8 @@ class MongoDBUserRepository(UserRepository):
             "status": user_data.get("status", "unset"),
             "platform_admin": bool(user_data.get("platform_admin", False)),
             "laundries": user_data.get("laundries") or [],
+            "hotels": user_data.get("hotels") or [],
+            "shops": user_data.get("shops") or [],
             "public_key": user_data.get("public_key"),
             "key_version": user_data.get("key_version", 1),
             "permissions": user_data.get("permissions"),

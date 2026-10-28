@@ -19,6 +19,7 @@ class UserCreate(BaseModel):
     public_key: str | None = None
     key_version: int | None = 1
     permissions: str | None = None
+    laundry_id: str | None = None
 
 
 class UserUpdate(BaseModel):
@@ -75,4 +76,6 @@ class UserResponse(BaseModel):
 class AuthResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    user: UserResponse
+
     user: UserResponse

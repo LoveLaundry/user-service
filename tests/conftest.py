@@ -31,6 +31,8 @@ COLLECTION_NAMES = [
     "sync_status_collection",
     "sync_logs_collection",
     "laundries_collection",
+    "hotels_collection",
+    "shops_collection",
     "client_accounts_collection",
 ]
 
@@ -45,6 +47,8 @@ DEPENDENT_MODULES = [
     "user_service.services.synchronization_service",
     "user_service.mongodb_repository",
     "user_service.routers.laundries",
+    "user_service.routers.hotels",
+    "user_service.routers.shops",
     "user_service.client_accounts",
     "user_service.client_associations",
     "user_service.main",
@@ -54,6 +58,8 @@ DEPENDENT_MODULES = [
 GUARDED_HANDLES = [
     ("user_service.mongodb_repository", "users_collection"),
     ("user_service.routers.laundries", "laundries_collection"),
+    ("user_service.routers.hotels", "hotels_collection"),
+    ("user_service.routers.shops", "shops_collection"),
     ("user_service.client_accounts", "client_accounts_collection"),
     ("user_service.client_associations", "client_accounts_collection"),
     ("user_service.repositories.main_repository", "sync_queue_collection"),
