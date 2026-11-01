@@ -16,6 +16,9 @@ if not _jwt_secret:
     raise RuntimeError("FATAL: JWT_SECRET environment variable is not set. Refusing to start.")
 JWT_SECRET = _jwt_secret
 JWT_ALGORITHM = "HS256"
+# Access tokens are intentionally short-lived. Refresh sessions are opaque,
+# server-tracked credentials issued by auth_sessions.py.
+ACCESS_TOKEN_TTL_HOURS = float(os.getenv("ACCESS_TOKEN_TTL_HOURS", "0.25"))
 
 security = HTTPBearer()
 
