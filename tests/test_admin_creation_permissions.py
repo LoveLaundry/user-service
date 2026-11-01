@@ -263,3 +263,156 @@ def test_laundry_admin_can_create_hotel_manager_and_shop_staff(client, mocked_db
     )
     assert shop_resp.status_code == 201
     assert shop_resp.json()["role_id"] == "SHOP_STAFF"
+
+
+# ── Hotel & Shop Admin Creation Via POST /users ────────────────────────────────
+
+def test_laundry_admin_cannot_create_hotel_admin_via_users(client, mocked_db):
+    _, token = _seed_user(mocked_db, "tenant-admin-u1", role="ADMIN", laundry_id="lovelaundry")
+    headers = {"Authorization": f"Bearer {token}"}
+    payload = {
+        "user_name": "New Hotel Admin",
+        "auth_id": "new.hotel.admin.u",
+        "password": "password123",
+        "role_id": "HOTEL_ADMIN",
+        "hotel_id": "hilton",
+    }
+    response = client.post("/users", json=payload, headers=headers)
+    assert response.status_code == 403
+    assert "Only platform administrators can create hotel administrators" in response.json()["detail"]
+
+
+def test_laundry_admin_cannot_create_shop_admin_via_users(client, mocked_db):
+    _, token = _seed_user(mocked_db, "tenant-admin-u2", role="ADMIN", laundry_id="lovelaundry")
+    headers = {"Authorization": f"Bearer {token}"}
+    payload = {
+        "user_name": "New Shop Admin",
+        "auth_id": "new.shop.admin.u",
+        "password": "password123",
+        "role_id": "SHOP_ADMIN",
+        "shop_id": "quickwash",
+    }
+    response = client.post("/users", json=payload, headers=headers)
+    assert response.status_code == 403
+    assert "Only platform administrators can create shop administrators" in response.json()["detail"]
+
+
+def test_platform_admin_can_create_hotel_admin_via_users(client, mocked_db):
+    _, token = _seed_user(mocked_db, "platform-admin-u3", role="PLATFORM_ADMIN", platform_admin=True)
+    headers = {"Authorization": f"Bearer {token}"}
+    payload = {
+        "user_name": "Hotel Admin User",
+        "auth_id": "hotel.admin.direct",
+        "password": "password123",
+        "role_id": "HOTEL_ADMIN",
+        "hotel_id": "cinnamon-grand",
+    }
+    response = client.post("/users", json=payload, headers=headers)
+    assert response.status_code == 201
+    data = response.json()
+    assert data["auth_id"] == "hotel.admin.direct"
+    assert data["role_id"] == "HOTEL_ADMIN"
+    assert any(h["id"] == "cinnamon-grand" and h["role"] == "HOTEL_ADMIN" for h in (data.get("hotels") or []))
+
+
+def test_platform_admin_can_create_shop_admin_via_users(client, mocked_db):
+    _, token = _seed_user(mocked_db, "platform-admin-u4", role="PLATFORM_ADMIN", platform_admin=True)
+    headers = {"Authorization": f"Bearer {token}"}
+    payload = {
+        "user_name": "Shop Admin User",
+        "auth_id": "shop.admin.direct",
+        "password": "password123",
+        "role_id": "SHOP_ADMIN",
+        "shop_id": "kandy-shop",
+    }
+    response = client.post("/users", json=payload, headers=headers)
+    assert response.status_code == 201
+    data = response.json()
+    assert data["auth_id"] == "shop.admin.direct"
+    assert data["role_id"] == "SHOP_ADMIN"
+    assert any(s["id"] == "kandy-shop" and s["role"] == "SHOP_ADMIN" for s in (data.get("shops") or []))
+
+
+# ── Entity Registration with Initial Admin & Direct Admin Endpoint ─────────────
+
+def test_platform_admin_can_create_hotel_with_initial_admin(client, mocked_db):
+    mocked_db["laundries_collection"].insert_one({"laundry_id": "lovelaundry", "name": "Love Laundry", "status": "ACTIVE"})
+    _, token = _seed_user(mocked_db, "platform-admin-hotel-init", role="PLATFORM_ADMIN", platform_admin=True)
+    headers = {"Authorization": f"Bearer {token}"}
+    payload = {
+        "hotel_id": "marino-beach",
+        "name": "Marino Beach Hotel",
+        "associated_laundry_id": "lovelaundry",
+        "admin_auth_id": "marino.admin",
+        "admin_user_name": "Marino Admin",
+        "admin_password": "securepassword123",
+        "admin_email": "admin@marinobeach.lk",
+    }
+    resp = client.post("/hotels", json=payload, headers=headers)
+    assert resp.status_code == 201
+    assert resp.json()["hotel_id"] == "marino-beach"
+
+    # Verify admin user was created in users_collection
+    user = mocked_db["users_collection"].find_one({"auth_id": "marino.admin"})
+    assert user is not None
+    assert user["role_id"] == "HOTEL_ADMIN"
+    assert any(h["id"] == "marino-beach" for h in (user.get("hotels") or []))
+
+
+def test_platform_admin_can_create_shop_with_initial_admin(client, mocked_db):
+    mocked_db["laundries_collection"].insert_one({"laundry_id": "lovelaundry", "name": "Love Laundry", "status": "ACTIVE"})
+    _, token = _seed_user(mocked_db, "platform-admin-shop-init", role="PLATFORM_ADMIN", platform_admin=True)
+    headers = {"Authorization": f"Bearer {token}"}
+    payload = {
+        "shop_id": "galle-outlet",
+        "name": "Galle Express Outlet",
+        "associated_laundry_id": "lovelaundry",
+        "admin_auth_id": "galle.shop.admin",
+        "admin_user_name": "Galle Shop Admin",
+        "admin_password": "securepassword123",
+    }
+    resp = client.post("/shops", json=payload, headers=headers)
+    assert resp.status_code == 201
+    assert resp.json()["shop_id"] == "galle-outlet"
+
+    user = mocked_db["users_collection"].find_one({"auth_id": "galle.shop.admin"})
+    assert user is not None
+    assert user["role_id"] == "SHOP_ADMIN"
+    assert any(s["id"] == "galle-outlet" for s in (user.get("shops") or []))
+
+
+def test_platform_admin_can_create_hotel_admin_via_admins_endpoint(client, mocked_db):
+    mocked_db["hotels_collection"].insert_one({"hotel_id": "shangrila", "name": "Shangri-La", "status": "ACTIVE"})
+    _, token = _seed_user(mocked_db, "platform-admin-hotel-endpoint", role="PLATFORM_ADMIN", platform_admin=True)
+    headers = {"Authorization": f"Bearer {token}"}
+    payload = {
+        "auth_id": "shangrila.admin",
+        "user_name": "Shangri-La Admin",
+        "password": "securepassword123",
+        "role": "HOTEL_ADMIN",
+    }
+    resp = client.post("/hotels/shangrila/admins", json=payload, headers=headers)
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["auth_id"] == "shangrila.admin"
+    assert data["role"] == "HOTEL_ADMIN"
+    assert data["hotel_id"] == "shangrila"
+
+
+def test_platform_admin_can_create_shop_admin_via_admins_endpoint(client, mocked_db):
+    mocked_db["shops_collection"].insert_one({"shop_id": "colombo-07-shop", "name": "Colombo 07 Shop", "status": "ACTIVE"})
+    _, token = _seed_user(mocked_db, "platform-admin-shop-endpoint", role="PLATFORM_ADMIN", platform_admin=True)
+    headers = {"Authorization": f"Bearer {token}"}
+    payload = {
+        "auth_id": "c7.shop.admin",
+        "user_name": "Colombo 7 Admin",
+        "password": "securepassword123",
+        "role": "SHOP_ADMIN",
+    }
+    resp = client.post("/shops/colombo-07-shop/admins", json=payload, headers=headers)
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["auth_id"] == "c7.shop.admin"
+    assert data["role"] == "SHOP_ADMIN"
+    assert data["shop_id"] == "colombo-07-shop"
+

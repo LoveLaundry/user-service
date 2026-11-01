@@ -470,7 +470,7 @@ def _check_admin_target(repo: UserRepository, user_id: Union[int, str], current_
     target_user = _load_user(repo, resolved_id)
     target_role = str(target_user.get("role_id") or "").upper()
     is_target_admin = (
-        target_role in {"ADMIN", "LAUNDRY_ADMIN", "PLATFORM_ADMIN"}
+        target_role in {"ADMIN", "LAUNDRY_ADMIN", "PLATFORM_ADMIN", "HOTEL_ADMIN", "SHOP_ADMIN"}
         or bool(target_user.get("platform_admin"))
     )
     if not is_platform_admin(current_user) and is_target_admin:
@@ -489,11 +489,17 @@ def create_user(
     repo: UserRepository = Depends(get_repository),
 ):
     role = str(payload.role_id or "").strip().upper()
-    if role in {"ADMIN", "LAUNDRY_ADMIN", "PLATFORM_ADMIN"}:
+    if role in {"ADMIN", "LAUNDRY_ADMIN", "PLATFORM_ADMIN", "HOTEL_ADMIN", "SHOP_ADMIN"}:
         if not is_platform_admin(current_user):
+            if role == "HOTEL_ADMIN":
+                msg = "Only platform administrators can create hotel administrators"
+            elif role == "SHOP_ADMIN":
+                msg = "Only platform administrators can create shop administrators"
+            else:
+                msg = "Only platform administrators can create laundry administrators"
             raise HTTPException(
                 status_code=403,
-                detail="Only platform administrators can create laundry administrators",
+                detail=msg,
             )
 
     if repo.exists_by_auth_id(payload.auth_id):
@@ -537,6 +543,48 @@ def create_user(
         repo.update(created["id"], {"laundries": entries})
         created["laundries"] = entries
 
+    # If hotel_id is specified, grant hotel membership
+    hotel_target = payload.hotel_id
+    if hotel_target and role != "PLATFORM_ADMIN":
+        h_slug = normalize_laundry_id(hotel_target)
+        try:
+            from .database.main_db import hotels_collection
+            found = hotels_collection.find_one({"hotel_id": h_slug})
+            h_name = (found or {}).get("name") or h_slug
+        except Exception:
+            h_name = h_slug
+        hotel_entry = {
+            "id": h_slug,
+            "name": h_name,
+            "role": role if role.startswith("HOTEL_") else "HOTEL_ADMIN",
+            "status": ACTIVE,
+        }
+        existing_hotels = created.get("hotels") or []
+        existing_hotels = [e for e in existing_hotels if e.get("id") != h_slug] + [hotel_entry]
+        repo.update(created["id"], {"hotels": existing_hotels})
+        created["hotels"] = existing_hotels
+
+    # If shop_id is specified, grant shop membership
+    shop_target = payload.shop_id
+    if shop_target and role != "PLATFORM_ADMIN":
+        s_slug = normalize_laundry_id(shop_target)
+        try:
+            from .database.main_db import shops_collection
+            found = shops_collection.find_one({"shop_id": s_slug})
+            s_name = (found or {}).get("name") or s_slug
+        except Exception:
+            s_name = s_slug
+        shop_entry = {
+            "id": s_slug,
+            "name": s_name,
+            "role": role if role.startswith("SHOP_") else "SHOP_ADMIN",
+            "status": ACTIVE,
+        }
+        existing_shops = created.get("shops") or []
+        existing_shops = [e for e in existing_shops if e.get("id") != s_slug] + [shop_entry]
+        repo.update(created["id"], {"shops": existing_shops})
+        created["shops"] = existing_shops
+
     return created
 
 
@@ -551,7 +599,7 @@ def update_user(
     _check_admin_target(repo, resolved_user_id, current_user)
 
     if not is_platform_admin(current_user):
-        if payload.role_id and str(payload.role_id).strip().upper() in {"ADMIN", "LAUNDRY_ADMIN", "PLATFORM_ADMIN"}:
+        if payload.role_id and str(payload.role_id).strip().upper() in {"ADMIN", "LAUNDRY_ADMIN", "PLATFORM_ADMIN", "HOTEL_ADMIN", "SHOP_ADMIN"}:
             raise HTTPException(
                 status_code=403,
                 detail="Only platform administrators can promote users to administrator",

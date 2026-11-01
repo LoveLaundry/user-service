@@ -105,6 +105,11 @@ class ShopCreate(BaseModel):
     subscription_plan: Optional[str] = Field(default=None, max_length=40)
     plan_limits: Optional[str] = Field(default=None, max_length=255)
     associated_laundry_id: str = Field(min_length=1, max_length=32)
+    # Optional initial administrator
+    admin_auth_id: Optional[str] = Field(default=None, max_length=64)
+    admin_user_name: Optional[str] = Field(default=None, max_length=120)
+    admin_password: Optional[str] = Field(default=None, max_length=128)
+    admin_email: Optional[str] = Field(default=None, max_length=120)
 
 
 class ShopUpdate(BaseModel):
@@ -210,6 +215,40 @@ def create_shop(payload: ShopCreate, admin: dict = Depends(require_platform_admi
 
     result = shops_collection.insert_one(document)
     document["_id"] = result.inserted_id
+
+    if payload.admin_auth_id and payload.admin_password:
+        import bcrypt
+        from ..crypto_helper import encrypt_dict, get_search_token
+        from ..mongodb_repository import SENSITIVE_FIELDS
+        auth_id_clean = payload.admin_auth_id.strip()
+        user_name_clean = (payload.admin_user_name or auth_id_clean).strip()
+        shop_membership = {
+            "id": slug,
+            "name": payload.name.strip(),
+            "role": "SHOP_ADMIN",
+            "status": ACTIVE,
+        }
+        existing = users_collection.find_one({"auth_id": auth_id_clean})
+        if existing:
+            shops_list = existing.get("shops") or []
+            updated_shops = [s for s in shops_list if s.get("id") != slug] + [shop_membership]
+            users_collection.update_one({"_id": existing["_id"]}, {"$set": {"shops": updated_shops, "updated_at": now}})
+        else:
+            hashed_pw = bcrypt.hashpw(payload.admin_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+            user_doc = {
+                "auth_id": auth_id_clean,
+                "user_name": user_name_clean,
+                "password": hashed_pw,
+                "role_id": "SHOP_ADMIN",
+                "status": "active",
+                "shops": [shop_membership],
+                "created_at": now,
+                "updated_at": now,
+            }
+            if payload.admin_email:
+                user_doc["email"] = payload.admin_email.strip()
+                user_doc["email_search"] = get_search_token(payload.admin_email.strip())
+            users_collection.insert_one(encrypt_dict(user_doc, SENSITIVE_FIELDS))
 
     return _serialize(document)
 
@@ -345,6 +384,66 @@ def remove_member(
     entries = [entry for entry in (user.get("shops") or []) if entry.get("id") != slug]
     users_collection.update_one({"_id": user["_id"]}, {"$set": {"shops": entries}})
     return {"message": "Membership revoked", "auth_id": auth_id, "shop_id": slug}
+
+
+class AdminUserCreate(BaseModel):
+    auth_id: str = Field(min_length=1, max_length=64)
+    user_name: str = Field(min_length=1, max_length=120)
+    password: str = Field(min_length=1, max_length=128)
+    email: Optional[str] = Field(default=None, max_length=120)
+    role: Optional[str] = Field(default="SHOP_ADMIN", max_length=32)
+
+
+@router.post("/shops/{shop_id}/admins", status_code=201)
+def create_shop_admin(
+    shop_id: str,
+    payload: AdminUserCreate,
+    _admin: dict = Depends(require_platform_admin),
+):
+    doc = _get_shop(shop_id)
+    slug = doc["shop_id"]
+    auth_id_clean = payload.auth_id.strip()
+    user_name_clean = payload.user_name.strip()
+    role_clean = str(payload.role or "SHOP_ADMIN").strip().upper()
+
+    existing = users_collection.find_one({"auth_id": auth_id_clean})
+    if existing:
+        raise HTTPException(status_code=400, detail="Auth ID already exists")
+
+    import bcrypt
+    from ..crypto_helper import encrypt_dict, get_search_token
+    from ..mongodb_repository import SENSITIVE_FIELDS
+    hashed_pw = bcrypt.hashpw(payload.password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    now = _now()
+    shop_membership = {
+        "id": slug,
+        "name": doc.get("name"),
+        "role": role_clean,
+        "status": ACTIVE,
+    }
+    user_doc = {
+        "auth_id": auth_id_clean,
+        "user_name": user_name_clean,
+        "password": hashed_pw,
+        "role_id": role_clean,
+        "status": "active",
+        "shops": [shop_membership],
+        "created_at": now,
+        "updated_at": now,
+    }
+    if payload.email:
+        user_doc["email"] = payload.email.strip()
+        user_doc["email_search"] = get_search_token(payload.email.strip())
+
+    result = users_collection.insert_one(encrypt_dict(user_doc, SENSITIVE_FIELDS))
+    return {
+        "id": str(result.inserted_id),
+        "auth_id": auth_id_clean,
+        "user_name": user_name_clean,
+        "shop_id": slug,
+        "role": role_clean,
+        "status": ACTIVE,
+    }
 
 
 # ── session hand-off ──────────────────────────────────────────────────────────

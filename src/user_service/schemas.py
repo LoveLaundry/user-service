@@ -20,6 +20,8 @@ class UserCreate(BaseModel):
     key_version: int | None = 1
     permissions: str | None = None
     laundry_id: str | None = None
+    hotel_id: str | None = None
+    shop_id: str | None = None
 
 
 class UserUpdate(BaseModel):
@@ -61,6 +63,11 @@ class UserResponse(BaseModel):
     public_key: str | None = None
     key_version: int | None = None
     permissions: str | None = None
+    platform_admin: bool | None = None
+    laundry_id: str | None = None
+    laundries: list | None = None
+    hotels: list | None = None
+    shops: list | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
