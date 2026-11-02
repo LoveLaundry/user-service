@@ -21,7 +21,7 @@ from .client_accounts import (
     client_scope_of,
     normalize_client_type,
 )
-from .database.main_db import laundries_collection
+from .database.main_db import hotels_collection, laundries_collection, shops_collection
 from .memberships import normalize_laundry_id
 
 
@@ -55,17 +55,22 @@ def list_associations(auth_id: Any, client_type: Any = None) -> List[Dict[str, A
     except Exception:
         return []
 
-    items = [
-        {
-            "laundry_id": normalize_laundry_id(doc.get("laundry_id")),
-            "laundry_name": _laundry_label(doc.get("laundry_id")),
-            "client_name": doc.get("client_name"),
-            "client_type": normalize_client_type(doc.get("client_type"), client_type or "HOTEL"),
-            "role_id": doc.get("role_id"),
-            "status": doc.get("status"),
-        }
-        for doc in docs
-    ]
+    items = []
+    for doc in docs:
+        side = normalize_client_type(doc.get("client_type"), client_type or "HOTEL")
+        items.append(
+            {
+                "laundry_id": normalize_laundry_id(doc.get("laundry_id")),
+                "laundry_name": _laundry_label(doc.get("laundry_id")),
+                "client_name": doc.get("client_name"),
+                "client_type": side,
+                # The entity this account is bound to, if it has been linked.
+                "hotel_id": (doc.get("hotel_id") or None) if side == "HOTEL" else None,
+                "shop_id": (doc.get("shop_id") or None) if side == "SHOP" else None,
+                "role_id": doc.get("role_id"),
+                "status": doc.get("status"),
+            }
+        )
     items.sort(key=lambda item: (item["laundry_name"] or "", item["laundry_id"] or ""))
     return items
 
@@ -100,4 +105,32 @@ def switch_to(session: Dict[str, Any], laundry_id: Any) -> Dict[str, Any]:
     if str(doc.get("status") or "").strip().upper() != ACTIVE:
         raise HTTPException(status_code=403, detail="That account is not active")
 
+    # An account is only as usable as the entity behind it: suspending a hotel
+    # must lock out its logins, not leave them trading under a live token.
+    _require_entity_active(doc, scope["client_type"])
+
     return doc
+
+
+def _require_entity_active(doc: Dict[str, Any], client_type: str) -> None:
+    """Refuse a switch into a hotel/shop that is suspended or archived."""
+    side = normalize_client_type(client_type)
+    entity_id = (doc.get("hotel_id") if side == "HOTEL" else doc.get("shop_id")) or ""
+    entity_id = str(entity_id).strip().lower()
+    if not entity_id:
+        return
+    collection = hotels_collection if side == "HOTEL" else shops_collection
+    field = "hotel_id" if side == "HOTEL" else "shop_id"
+    try:
+        entity = collection.find_one(
+            {
+                field: entity_id,
+                "associated_laundry_id": normalize_laundry_id(doc.get("laundry_id")),
+            }
+        )
+    except Exception:
+        entity = None
+    if not entity:
+        raise HTTPException(status_code=403, detail="That account's entity no longer exists")
+    if str(entity.get("status") or "").strip().upper() != ACTIVE:
+        raise HTTPException(status_code=403, detail="That entity is not active")

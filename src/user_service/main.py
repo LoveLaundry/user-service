@@ -1206,6 +1206,11 @@ class ClientCreatePayload(BaseModel):
     email: str | None = None
     role: str | None = None
     client_type: str | None = "HOTEL"
+    # Entity association. Supply the hotel or shop this login belongs to; the
+    # side must match client_type. Omitted, it is resolved from client_name
+    # when that laundry has exactly one entity by that name.
+    hotel_id: str | None = None
+    shop_id: str | None = None
     # Platform admins must name the target laundry; tenant admins default to
     # their active one and cannot reach another tenant.
     laundry_id: str | None = None
@@ -1288,6 +1293,8 @@ def create_client(
         email=payload.email,
         role=target_role,
         client_type=side,
+        hotel_id=payload.hotel_id,
+        shop_id=payload.shop_id,
     )
     return client_public_view(doc)
 
@@ -1445,18 +1452,34 @@ def create_client_staff(
         email=payload.email,
         role=role,
         client_type=side,
+        # Inherited from the administrator's own token, never the request
+        # body: staff must land in the same hotel/shop as their admin.
+        hotel_id=scope.get("hotel_id"),
+        shop_id=scope.get("shop_id"),
     )
     return client_public_view(doc)
 
 
 @app.get("/client/staff")
 def list_client_staff(session: dict = Depends(get_client_session)):
-    """Everyone enrolled under the caller's own customer account."""
+    """Everyone enrolled under the caller's own customer account.
+
+    Grouped by entity id when the caller has one, because two hotels in the same
+    laundry may legitimately share a display name — grouping by name would show
+    one hotel's staff to the other. Accounts predating entity association fall
+    back to the name match.
+    """
     scope = client_scope_of(session)
-    items = [
-        account
-        for account in list_client_accounts(scope["laundry_id"])
-        if str(account.get("client_name")) == scope["client_name"]
-        and str(account.get("client_type", "")).upper() == scope["client_type"]
-    ]
-    return {"items": items, "total": len(items)}
+    entity_id = scope.get("hotel_id") or scope.get("shop_id")
+    field = "hotel_id" if scope["client_type"] == "HOTEL" else "shop_id"
+
+    items = []
+    for account in list_client_accounts(scope["laundry_id"]):
+        if str(account.get("client_type", "")).upper() != scope["client_type"]:
+            continue
+        if entity_id:
+            if str(account.get(field) or "") == entity_id:
+                items.append(account)
+        elif str(account.get("client_name")) == scope["client_name"]:
+            items.append(account)
+    return {"items": items, "total": len(items), field: entity_id or None}

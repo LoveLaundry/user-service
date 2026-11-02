@@ -2,20 +2,28 @@
 
 Why this module exists
 ----------------------
-A hotel is not an entity in this system: hotels appear only as the ``client_name``
-string carried by gate passes, deliveries, bills and quotations (see
-``quotations-ui/src/context/HotelContext.tsx``). Staff accounts, by contrast, are
-``users`` rows belonging to a laundry membership. A hotel therefore had no
-identity it could sign in with, which is what this module adds.
+Hotels and shops are first-class entities (``hotels`` / ``shops`` collections, see
+``architecture/MULTI_TENANT_ENTITY_ARCHITECTURE.md``). A client account is the
+login that entity signs in with, so every account carries the entity it belongs
+to — ``hotel_id`` for a hotel login, ``shop_id`` for a shop login — in addition
+to the ``client_name`` display string kept for reporting on older records.
+
+An account may be created without an entity id (legacy rows, and laundries that
+have not yet migrated their customer list into the registry). In that case the
+association is resolved from ``client_name`` when a matching entity exists in
+the same laundry. When both are present they must agree: an account is never
+allowed to name one hotel while pointing at another.
 
 The isolation rule that makes this safe
 ---------------------------------------
 A client session token deliberately carries **no** ``laundry_id`` and **no**
 ``laundries`` membership snapshot. It carries ``client_scope`` instead:
 
-    {"laundry_id": "<slug>", "client_name": "<hotel>"}
+    {"laundry_id": "<slug>", "client_type": "HOTEL",
+     "hotel_id": "<slug>", "client_name": "<name>"}
 
-Every resource service resolves its tenant from those two claims and fails
+Exactly one of ``hotel_id`` / ``shop_id`` is populated, chosen by
+``client_type``. Every resource service resolves its tenant from those claims and fails
 closed when they are missing (``bill_service/tenancy.py`` →
 ``resolve_laundry_id`` raises 400 "No active laundry in this session"). This
 means the whole existing API surface keeps rejecting client tokens **without a
@@ -46,9 +54,15 @@ from fastapi import HTTPException, Security
 # test run would open a connection to the production cluster instead of the
 # local/mocked one. Importing the database handle first makes config resolve the
 # same URI the application itself would use.
-from .database.main_db import client_accounts_collection, laundries_collection
+from .database.main_db import (
+    client_accounts_collection,
+    hotels_collection,
+    laundries_collection,
+    shops_collection,
+)
 
 from .auth_helper import DISABLED_STATUSES, create_access_token, security, verify_token
+from .entity_memberships import normalize_entity_id
 from .memberships import ACTIVE, ARCHIVED, SUSPENDED, VALID_STATUSES, normalize_laundry_id
 
 # A client account belongs to one of two sides of the business, and the side is
@@ -145,6 +159,106 @@ def normalize_status(value: Any) -> str:
     return status
 
 
+ENTITY_COLLECTIONS = {"HOTEL": "hotels", "SHOP": "shops"}
+
+
+def _entity_collection(side: str):
+    return hotels_collection if side == "HOTEL" else shops_collection
+
+
+def _entity_id_field(side: str) -> str:
+    return "hotel_id" if side == "HOTEL" else "shop_id"
+
+
+def resolve_client_entity(
+    *,
+    client_type: Any,
+    laundry_id: Any,
+    client_name: Any = None,
+    hotel_id: Any = None,
+    shop_id: Any = None,
+) -> Dict[str, Any]:
+    """Bind a client account to its hotel or shop entity inside one laundry.
+
+    Returns ``{"hotel_id": ..., "shop_id": ..., "client_name": ...}``.
+
+    Rules, in order:
+    - An id supplied for the *other* side is rejected: a hotel login can never
+      point at a shop.
+    - An explicit id must exist, belong to this laundry, and be ACTIVE.
+    - With no id, a unique entity whose name matches ``client_name`` in this
+      laundry is adopted, so existing customer lists migrate on first login
+      instead of requiring a manual backfill.
+    - With neither, the account stays name-only (legacy behaviour) rather than
+      being rejected, so a laundry can keep trading while it migrates.
+
+    All reads are scoped by ``associated_laundry_id``: an id belonging to a
+    different laundry is reported as "not found" so the response cannot be used
+    to probe another tenant's entity ids.
+    """
+    side = normalize_client_type(client_type)
+    slug = normalize_laundry_id(laundry_id)
+    if not slug:
+        raise HTTPException(status_code=400, detail="A laundry is required")
+
+    foreign = shop_id if side == "HOTEL" else hotel_id
+    if str(foreign or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail=f"A {side} account cannot be associated with a {ENTITY_COLLECTIONS[CLIENT_TYPES[side]]} entity",
+        )
+
+    explicit = hotel_id if side == "HOTEL" else shop_id
+    collection = _entity_collection(side)
+    id_field = _entity_id_field(side)
+    name = normalize_client_name(client_name) if client_name else ""
+
+    doc = None
+    if str(explicit or "").strip():
+        wanted = normalize_entity_id(explicit)
+        try:
+            doc = collection.find_one(
+                {id_field: wanted, "associated_laundry_id": slug}
+            )
+        except Exception:
+            doc = None
+        if not doc:
+            raise HTTPException(status_code=404, detail="No such entity in this laundry")
+    elif name:
+        try:
+            matches = list(
+                collection.find(
+                    {"associated_laundry_id": slug, "name": name}
+                ).limit(2)
+            )
+        except Exception:
+            matches = []
+        # Only adopt an unambiguous name match; two hotels sharing a name must
+        # be disambiguated by id, never by guessing.
+        if len(matches) == 1:
+            doc = matches[0]
+
+    if not doc:
+        return {"hotel_id": None, "shop_id": None, "client_name": name}
+
+    if str(doc.get("status") or "").strip().upper() != ACTIVE:
+        raise HTTPException(status_code=403, detail="That entity is not active")
+
+    entity_id = normalize_entity_id(doc.get(id_field))
+    entity_name = str(doc.get("name") or "").strip()
+    if name and entity_name and name != entity_name:
+        raise HTTPException(
+            status_code=409,
+            detail="client_name does not match the associated entity",
+        )
+
+    return {
+        "hotel_id": entity_id if side == "HOTEL" else None,
+        "shop_id": entity_id if side == "SHOP" else None,
+        "client_name": entity_name or name,
+    }
+
+
 def hash_password(password: str) -> str:
     raw = str(password or "")
     if len(raw) < 8:
@@ -168,6 +282,8 @@ def create_client_account(
     role: Any = None,
     client_type: Any = "HOTEL",
     status: Any = ACTIVE,
+    hotel_id: Any = None,
+    shop_id: Any = None,
 ) -> Dict[str, Any]:
     """Create one client login for one laundry.
 
@@ -176,13 +292,23 @@ def create_client_account(
     because a token resolves to exactly one (laundry, side, client) triple.
     """
     slug = normalize_laundry_id(laundry_id)
-    name = normalize_client_name(client_name)
     login = normalize_auth_id(auth_id)
     display = str(user_name or "").strip() or login
     side = normalize_client_type(client_type)
     default_role = "HOTEL_MANAGER" if side == "HOTEL" else "SHOP_STAFF"
     normalized_role = normalize_role(role or default_role, side)
     normalized_status = normalize_status(status)
+
+    association = resolve_client_entity(
+        client_type=side,
+        laundry_id=slug,
+        client_name=client_name,
+        hotel_id=hotel_id,
+        shop_id=shop_id,
+    )
+    name = association["client_name"]
+    if not name:
+        raise HTTPException(status_code=400, detail="A client name is required")
 
     if client_accounts_collection.find_one({"laundry_id": slug, "auth_id": login}):
         raise HTTPException(
@@ -193,6 +319,8 @@ def create_client_account(
     doc = {
         "laundry_id": slug,
         "client_type": side,
+        "hotel_id": association["hotel_id"],
+        "shop_id": association["shop_id"],
         "client_name": name,
         "auth_id": login,
         "user_name": display[:120],
@@ -315,6 +443,10 @@ def build_client_token(doc: Dict[str, Any]) -> str:
             "laundry_id": normalize_laundry_id(doc.get("laundry_id")),
             "client_name": normalize_client_name(doc.get("client_name")),
             "client_type": normalize_client_type(doc.get("client_type")),
+            # Exactly one of these is set, matching client_type. Carried in the
+            # token so downstream services scope by entity without a lookup.
+            "hotel_id": (doc.get("hotel_id") or None),
+            "shop_id": (doc.get("shop_id") or None),
         },
     }
     # Hotel staff sign in from shared front-desk machines, so the session is
@@ -329,6 +461,8 @@ def public_view(doc: Dict[str, Any]) -> Dict[str, Any]:
         "laundry_id": doc.get("laundry_id"),
         "client_type": normalize_client_type(doc.get("client_type")),
         "client_name": doc.get("client_name"),
+        "hotel_id": doc.get("hotel_id") or None,
+        "shop_id": doc.get("shop_id") or None,
         "auth_id": doc.get("auth_id"),
         "user_name": doc.get("user_name"),
         "email": doc.get("email"),
@@ -375,6 +509,12 @@ def get_client_session(credentials=Security(security)) -> Dict[str, Any]:
         "laundry_id": normalize_laundry_id(doc.get("laundry_id")),
         "client_name": normalize_client_name(doc.get("client_name")),
         "client_type": normalize_client_type(doc.get("client_type")),
+        # Rebuilt from the stored account, not copied from the token: an
+        # association added or corrected by an administrator must take effect
+        # on the next request. Omitting these here silently dropped the entity
+        # from every authenticated call.
+        "hotel_id": doc.get("hotel_id") or None,
+        "shop_id": doc.get("shop_id") or None,
     }
     return payload
 
@@ -382,10 +522,17 @@ def get_client_session(credentials=Security(security)) -> Dict[str, Any]:
 def client_scope_of(session: Dict[str, Any]) -> Dict[str, str]:
     """Extract the (laundry, hotel) pair a client request may read."""
     scope = session.get("client_scope") or {}
+    side = normalize_client_type(scope.get("client_type"))
+    # Only the id for this account's own side is ever returned, so a hotel
+    # token cannot read a shop id even if one were somehow present.
+    hotel_id = str(scope.get("hotel_id") or "").strip().lower() if side == "HOTEL" else ""
+    shop_id = str(scope.get("shop_id") or "").strip().lower() if side == "SHOP" else ""
     return {
         "laundry_id": normalize_laundry_id(scope.get("laundry_id")),
         "client_name": normalize_client_name(scope.get("client_name")),
-        "client_type": normalize_client_type(scope.get("client_type")),
+        "client_type": side,
+        "hotel_id": hotel_id or None,
+        "shop_id": shop_id or None,
     }
 
 

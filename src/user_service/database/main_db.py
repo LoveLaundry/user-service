@@ -66,6 +66,14 @@ def ensure_indexes():
     # New indexes for entity migration
     client_accounts_collection.create_index("hotel_id", sparse=True)
     client_accounts_collection.create_index("shop_id", sparse=True)
+    # Entity association lookups always pair the entity with its laundry, so the
+    # compound form serves the staff listing and switch checks directly.
+    client_accounts_collection.create_index(
+        [("laundry_id", 1), ("hotel_id", 1)], sparse=True
+    )
+    client_accounts_collection.create_index(
+        [("laundry_id", 1), ("shop_id", 1)], sparse=True
+    )
 
     # Sync infrastructure indexes
     sync_status_collection.create_index([("entity", 1), ("record_id", 1)], unique=True)

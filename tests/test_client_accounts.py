@@ -50,6 +50,9 @@ def test_client_token_carries_no_laundry_membership_claim():
         "laundry_id": "lovelaundry",
         "client_name": "Cinnamon Grand",
         "client_type": "HOTEL",
+        # No registered entity in this fixture, so the association is absent.
+        "hotel_id": None,
+        "shop_id": None,
     }
     # Absent, not empty: resource services fail closed on a missing claim.
     assert "laundry_id" not in claims
