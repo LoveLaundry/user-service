@@ -19,7 +19,14 @@ from starlette.middleware.base import BaseHTTPMiddleware
 # not injected by the platform.
 DEFAULT_ALLOWED_ORIGINS = [
     "https://lovelaundry-manager.vercel.app",
+    "https://hotels-manager.vercel.app",
+    "https://hotels-manager-amber.vercel.app",
+    "https://shops-manager.vercel.app",
+    "https://system-lovelaundry-lk.vercel.app",
     "http://localhost:5173",
+    "http://localhost:5174",
+    "http://localhost:5175",
+    "http://localhost:5176",
     "http://localhost:3000",
 ]
 

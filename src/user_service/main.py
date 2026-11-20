@@ -9,8 +9,10 @@ import base64
 from .config import DB_TYPE, DatabaseType
 from .repository import UserRepository
 from .repository_factory import close_connections, get_repository
-from .auth_helper import create_access_token, get_current_user, require_role
+from .auth_helper import create_access_token, get_current_user, is_platform_admin, require_role
 from .schemas import (
+    SUB_ADMIN_ROLES,
+    PLATFORM_ADMIN,
     UserCreate,
     UserPasswordUpdate,
     UserResponse,
@@ -37,7 +39,14 @@ logger = logging.getLogger(__name__)
 # the ALLOWED_ORIGINS env var is not injected by the platform).
 DEFAULT_ALLOWED_ORIGINS = [
     "https://lovelaundry-manager.vercel.app",
+    "https://hotels-manager.vercel.app",
+    "https://hotels-manager-amber.vercel.app",
+    "https://shops-manager.vercel.app",
+    "https://system-lovelaundry-lk.vercel.app",
     "http://localhost:5173",
+    "http://localhost:5174",
+    "http://localhost:5175",
+    "http://localhost:5176",
     "http://localhost:3000",
 ]
 
@@ -149,6 +158,13 @@ class LoginPayload(BaseModel):
     password: str
 
 
+class ChangePasswordPayload(BaseModel):
+    # Self-service password change: the caller must supply the current password
+    # (verified against the stored bcrypt hash) and the new password.
+    current_password: str
+    new_password: str
+
+
 # Statuses that block a sign-in. `unset` is the column default and `active` is
 # the only enabled value, so this is a blocklist rather than an allowlist: an
 # account that was never given a status must keep working.
@@ -211,6 +227,40 @@ def login(payload: LoginPayload, repo: UserRepository = Depends(get_repository))
 @app.get("/auth/status")
 def auth_status(current_user: dict = Depends(get_current_user)):
     return current_user
+
+@app.patch("/auth/password")
+def change_own_password(
+    payload: ChangePasswordPayload,
+    current_user: dict = Depends(get_current_user),
+    repo: UserRepository = Depends(get_repository),
+):
+    """Self-service password change for the signed-in account.
+
+    Sub-admins (laundry / shop / hotel admins) provisioned by the platform
+    administrator use this endpoint to rotate their own credentials. The platform
+    administrator cannot reset a sub-admin's password — only the sub-admin itself
+    can (via this endpoint) or the platform admin via status change.
+    """
+    caller_auth_id = str(current_user.get("auth_id") or "")
+    caller = repo.get_by_auth_id(caller_auth_id) if caller_auth_id else None
+    if not caller or "password" not in caller:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    stored_hash = str(caller.get("password") or "")
+    try:
+        current_ok = bcrypt.checkpw(
+            payload.current_password.encode("utf-8"), stored_hash.encode("utf-8")
+        )
+    except Exception:
+        current_ok = False
+    if not current_ok:
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+    if not repo.update_password(str(caller["id"]), payload.new_password):
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {"message": "Password updated successfully"}
+
 
 
 # ── User routes (admin only) ─────────────────────────────────────────────────────
@@ -288,7 +338,23 @@ def create_user(
     if payload.employee_id and repo.exists_by_employee_id(payload.employee_id):
         raise HTTPException(status_code=400, detail="Employee ID already exists")
 
-    return repo.create(payload.model_dump())
+    role = str(payload.role_id or "").upper()
+    is_sub_admin = role in SUB_ADMIN_ROLES
+    if is_sub_admin:
+        # Sub-admins (laundry / shop / hotel admins) are always provisioned for
+        # a specific tenant and always start in an active state.
+        if not payload.laundry_id:
+            raise HTTPException(status_code=400, detail="laundry_id is required for sub-admin users")
+        if str(payload.status or "unset").lower() in {"inactive", "disabled", "suspended", "blocked", "deleted"}:
+            raise HTTPException(status_code=400, detail="Sub-admin users must start with an active status")
+
+    user_data = payload.model_dump()
+    user_data["role_id"] = role
+    user_data["status"] = str(user_data.get("status") or "unset")
+    if payload.laundry_id:
+        user_data["laundry_id"] = payload.laundry_id
+
+    return repo.create(user_data)
 
 
 @app.put("/users/{user_id}", response_model=UserResponse, dependencies=[Depends(require_role(["ADMIN"]))])
@@ -296,11 +362,29 @@ def update_user(
     user_id: Union[int, str],
     payload: UserUpdate,
     repo: UserRepository = Depends(get_repository),
+    current_user: dict = Depends(get_current_user),
 ):
     if DB_TYPE == DatabaseType.MONGODB:
         user_id = str(user_id)
     else:
         user_id = int(user_id)
+
+    target_user = repo.get_by_id(user_id)
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Platform administrators cannot reset the password of a sub-admin via this
+    # endpoint either — sub-admins rotate their own credentials via
+    # PATCH /auth/password, and the platform admin may only change status.
+    if (
+        payload.password is not None
+        and str((target_user or {}).get("role_id") or "").upper() in SUB_ADMIN_ROLES
+        and is_platform_admin(current_user)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Platform administrators cannot reset the password of a sub-admin. The administrator must change its own password.",
+        )
 
     user = repo.update(user_id, payload.model_dump(exclude_unset=True))
 
@@ -377,11 +461,25 @@ def update_password(
     user_id: Union[int, str],
     payload: UserPasswordUpdate,
     repo: UserRepository = Depends(get_repository),
+    current_user: dict = Depends(get_current_user),
 ):
     if DB_TYPE == DatabaseType.MONGODB:
         user_id = str(user_id)
     else:
         user_id = int(user_id)
+
+    target_user = repo.get_by_id(user_id)
+    is_sub_admin = str((target_user or {}).get("role_id") or "").upper() in SUB_ADMIN_ROLES
+    actor_is_platform = is_platform_admin(current_user)
+    if is_sub_admin and actor_is_platform:
+        # Platform administrators must not reset the password of a sub-admin.
+        # Sub-admins manage their own credentials via self-service
+        # (PATCH /auth/password); the platform admin may only change the
+        # activeness (status) of such accounts.
+        raise HTTPException(
+            status_code=403,
+            detail="Platform administrators cannot reset the password of a sub-admin. The administrator must change its own password.",
+        )
 
     if not repo.update_password(user_id, payload.password):
         raise HTTPException(status_code=404, detail="User not found")
