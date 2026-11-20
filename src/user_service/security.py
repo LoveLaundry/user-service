@@ -32,6 +32,7 @@ DEFAULT_ALLOWED_ORIGINS = [
     "https://hotels-manager-amber.vercel.app",
     "https://shops-manager.vercel.app",
     "https://system-lovelaundry-lk.vercel.app",
+    "https://lovelaundry-shop-app.vercel.app",
     "http://localhost:5173",
     "http://localhost:5174",
     "http://localhost:5175",
