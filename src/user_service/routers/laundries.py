@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-from ..auth_helper import create_access_token, get_current_user
+from ..auth_helper import ACCESS_TOKEN_TTL_HOURS, create_access_token, get_current_user
 from ..database.main_db import laundries_collection, users_collection
 from ..memberships import (
     ACTIVE,
@@ -411,7 +411,7 @@ def switch_laundry(
     }
     token_data.update(claims)
     return {
-        "access_token": create_access_token(token_data),
+        "access_token": create_access_token(token_data, expires_in_hours=ACCESS_TOKEN_TTL_HOURS),
         "token_type": "bearer",
         "user": _user_response(user),
     }

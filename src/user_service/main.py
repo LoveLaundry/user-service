@@ -10,6 +10,7 @@ from .config import DB_TYPE, DatabaseType
 from .repository import UserRepository
 from .repository_factory import close_connections, get_repository
 from .auth_helper import (
+    ACCESS_TOKEN_TTL_HOURS,
     DISABLED_STATUSES,
     create_access_token,
     get_current_user,
@@ -257,7 +258,7 @@ def login(payload: LoginPayload, repo: UserRepository = Depends(get_repository))
             detail="This account is inactive. Contact an administrator.",
         )
 
-    role = str(user["role_id"]).upper()
+    role = str(user.get("role_id") or "USER").upper()
 
     # An administrator can disable an account, but the flag was copied into the
     # token and never acted on — a disabled user kept full access until the
@@ -296,7 +297,7 @@ def login(payload: LoginPayload, repo: UserRepository = Depends(get_repository))
         "auth_id": user["auth_id"],
         "user_name": user["user_name"],
         "role": role,
-        "status": user["status"],
+        "status": user.get("status") or "unset",
         "platform_admin": bool(user.get("platform_admin"))
         or str(role).upper() == "PLATFORM_ADMIN",
         # Tenant claims every resource service trusts. Built in one place so
@@ -315,7 +316,7 @@ def login(payload: LoginPayload, repo: UserRepository = Depends(get_repository))
         role
     ).upper() == "PLATFORM_ADMIN"
 
-    token = create_access_token(token_data)
+    token = create_access_token(token_data, expires_in_hours=ACCESS_TOKEN_TTL_HOURS)
     return {
         "access_token": token,
         "token_type": "bearer",
@@ -387,7 +388,7 @@ def bootstrap_first_admin(payload: BootstrapPayload, repo: UserRepository = Depe
     user_response["shops"] = effective_entity_memberships(user, "shops")
     user_response["platform_admin"] = True
     return {
-        "access_token": create_access_token(token_data),
+        "access_token": create_access_token(token_data, expires_in_hours=ACCESS_TOKEN_TTL_HOURS),
         "token_type": "bearer",
         "user": user_response,
     }
@@ -1003,12 +1004,12 @@ def switch_hotel(
         "user_id": user["id"],
         "auth_id": user["auth_id"],
         "user_name": user["user_name"],
-        "role": str(user["role_id"]).upper(),
-        "status": user.get("status"),
+        "role": str(user.get("role_id") or "USER").upper(),
+        "status": user.get("status") or "unset",
         **claims,
     }
     return {
-        "access_token": create_access_token(token_data),
+        "access_token": create_access_token(token_data, expires_in_hours=ACCESS_TOKEN_TTL_HOURS),
         "token_type": "bearer",
         "hotel_id": claims["hotel_id"],
         "hotels": claims["hotels"],
@@ -1147,12 +1148,12 @@ def switch_shop(
         "user_id": user["id"],
         "auth_id": user["auth_id"],
         "user_name": user["user_name"],
-        "role": str(user["role_id"]).upper(),
-        "status": user.get("status"),
+        "role": str(user.get("role_id") or "USER").upper(),
+        "status": user.get("status") or "unset",
         **claims,
     }
     return {
-        "access_token": create_access_token(token_data),
+        "access_token": create_access_token(token_data, expires_in_hours=ACCESS_TOKEN_TTL_HOURS),
         "token_type": "bearer",
         "shop_id": claims["shop_id"],
         "shops": claims["shops"],
@@ -1174,14 +1175,14 @@ def switch_laundry(
         "user_id": user["id"],
         "auth_id": user["auth_id"],
         "user_name": user["user_name"],
-        "role": str(user["role_id"]).upper(),
-        "status": user.get("status"),
+        "role": str(user.get("role_id") or "USER").upper(),
+        "status": user.get("status") or "unset",
         **claims,
         **build_entity_claims(user, "hotels"),
         **build_entity_claims(user, "shops"),
     }
     return {
-        "access_token": create_access_token(token_data),
+        "access_token": create_access_token(token_data, expires_in_hours=ACCESS_TOKEN_TTL_HOURS),
         "token_type": "bearer",
         "laundry_id": claims["laundry_id"],
         "laundries": claims["laundries"],
@@ -1375,20 +1376,20 @@ def refresh_token(
             detail="This account is inactive. Contact an administrator.",
         )
 
-    role = str(user["role_id"]).upper()
+    role = str(user.get("role_id") or "USER").upper()
     token_data = {
         "user_id": user["id"],
         "auth_id": user["auth_id"],
         "user_name": user["user_name"],
         "role": role,
-        "status": user["status"],
+        "status": user.get("status") or "unset",
         "platform_admin": bool(user.get("platform_admin"))
         or role == "PLATFORM_ADMIN",
         **build_claims(user, current_user.get("laundry_id")),
         **build_entity_claims(user, "hotels", current_user.get("hotel_id")),
         **build_entity_claims(user, "shops", current_user.get("shop_id")),
     }
-    return {"access_token": create_access_token(token_data), "token_type": "bearer"}
+    return {"access_token": create_access_token(token_data, expires_in_hours=ACCESS_TOKEN_TTL_HOURS), "token_type": "bearer"}
 
 
 @app.post("/client/auth/refresh")

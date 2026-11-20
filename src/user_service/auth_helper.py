@@ -28,7 +28,7 @@ security = HTTPBearer()
 DISABLED_STATUSES = {"inactive", "disabled", "suspended", "blocked", "deleted"}
 
 
-def create_access_token(data: dict, expires_in_hours: int = 24) -> str:
+def create_access_token(data: dict, expires_in_hours: float = ACCESS_TOKEN_TTL_HOURS) -> str:
     """Create a signed JWT token containing user info."""
     payload = data.copy()
     now = datetime.now(timezone.utc)
