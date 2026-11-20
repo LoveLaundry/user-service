@@ -15,9 +15,13 @@ class UserCreate(BaseModel):
     auth_id: str
     password: str
     status: str = "unset"
+    tenant: str | None = None
     public_key: str | None = None
     key_version: int | None = 1
     permissions: str | None = None
+    laundry_id: str | None = None
+    hotel_id: str | None = None
+    shop_id: str | None = None
 
 
 class UserUpdate(BaseModel):
@@ -55,9 +59,15 @@ class UserResponse(BaseModel):
     employee_id: str | None = None
     auth_id: str
     status: str
+    tenant: str | None = None
     public_key: str | None = None
     key_version: int | None = None
     permissions: str | None = None
+    platform_admin: bool | None = None
+    laundry_id: str | None = None
+    laundries: list | None = None
+    hotels: list | None = None
+    shops: list | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -68,3 +78,11 @@ class UserResponse(BaseModel):
         return stamp(value)
 
     model_config = {"from_attributes": True}
+
+
+class AuthResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserResponse
+
+    user: UserResponse

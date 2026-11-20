@@ -14,6 +14,18 @@ _db = get_database(ROLE_MAIN)
 users_collection: Collection = _db.get_collection("users")
 
 # Sync infrastructure collections live alongside business data in MAIN.
+# Laundry registry (tenants). One document per independent business.
+laundries_collection: Collection = _db.get_collection("laundries")
+
+# Hotel and Shop entity registries. First-class entities with their own administrators.
+hotels_collection: Collection = _db.get_collection("hotels")
+shops_collection: Collection = _db.get_collection("shops")
+
+# External hotel logins. Deliberately separate from `users`: a hotel is a
+# customer of a laundry, not a member of its staff, and its session must never
+# receive a laundry membership claim (see client_accounts.py).
+client_accounts_collection: Collection = _db.get_collection("client_accounts")
+
 sync_status_collection: Collection = _db.get_collection("sync_status")
 sync_queue_collection: Collection = _db.get_collection("sync_queue")
 sync_logs_collection: Collection = _db.get_collection("sync_logs")
@@ -28,6 +40,40 @@ def ensure_indexes():
     users_collection.create_index("mobile_number_search", sparse=True)
     users_collection.create_index("employee_id", sparse=True)
     users_collection.create_index("created_at")
+    laundries_collection.create_index("laundry_id", unique=True)
+    laundries_collection.create_index("status")
+    laundries_collection.create_index("name")
+
+    # Hotel entity registry indexes
+    hotels_collection.create_index("hotel_id", unique=True)
+    hotels_collection.create_index("associated_laundry_id")
+    hotels_collection.create_index("status")
+    hotels_collection.create_index("name")
+
+    # Shop entity registry indexes
+    shops_collection.create_index("shop_id", unique=True)
+    shops_collection.create_index("associated_laundry_id")
+    shops_collection.create_index("status")
+    shops_collection.create_index("name")
+
+    # Client logins are scoped per laundry: the same hotel-brand login may exist
+    # under two different laundry businesses, but never twice inside one.
+    client_accounts_collection.create_index(
+        [("laundry_id", 1), ("auth_id", 1)], unique=True
+    )
+    client_accounts_collection.create_index([("laundry_id", 1), ("client_name", 1)])
+    client_accounts_collection.create_index("status")
+    # New indexes for entity migration
+    client_accounts_collection.create_index("hotel_id", sparse=True)
+    client_accounts_collection.create_index("shop_id", sparse=True)
+    # Entity association lookups always pair the entity with its laundry, so the
+    # compound form serves the staff listing and switch checks directly.
+    client_accounts_collection.create_index(
+        [("laundry_id", 1), ("hotel_id", 1)], sparse=True
+    )
+    client_accounts_collection.create_index(
+        [("laundry_id", 1), ("shop_id", 1)], sparse=True
+    )
 
     # Sync infrastructure indexes
     sync_status_collection.create_index([("entity", 1), ("record_id", 1)], unique=True)
