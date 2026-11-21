@@ -20,7 +20,28 @@ SUSPENDED = "SUSPENDED"
 ARCHIVED = "ARCHIVED"
 VALID_STATUSES = {ACTIVE, SUSPENDED, ARCHIVED}
 
+# Entity roles are deliberately not the laundry ADMIN/MANAGER/STAFF strings.
+# A generic "ADMIN" says nothing about which business the login may enter.
+ENTITY_ROLES = {
+    "hotels": {"HOTEL_ADMIN", "HOTEL_MANAGER"},
+    "shops": {"SHOP_ADMIN", "SHOP_STAFF"},
+}
+
 _ENTITY_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+
+
+def normalize_entity_role(value: Any, entity_type: str) -> str:
+    """Validate an entity-specific role. Raises 400 rather than storing junk."""
+    allowed = ENTITY_ROLES.get(entity_type)
+    if allowed is None:
+        raise HTTPException(status_code=400, detail=f"Unknown entity type: {entity_type}")
+    role = str(value or "").strip().upper()
+    if role not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"role must be one of {sorted(allowed)}",
+        )
+    return role
 
 
 def normalize_entity_id(value: Any) -> str:

@@ -19,8 +19,19 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from ..auth_helper import create_access_token, get_current_user
-from ..database.main_db import shops_collection, laundries_collection, users_collection
-from ..memberships import ACTIVE, VALID_STATUSES, normalize_laundry_id
+from ..client_accounts import (
+    assign_login_to_entity,
+    set_entity_login_status,
+    unassign_login_from_entity,
+)
+from ..database.main_db import (
+    client_accounts_collection,
+    shops_collection,
+    laundries_collection,
+    users_collection,
+)
+from ..entity_memberships import normalize_entity_role
+from ..memberships import ACTIVE, VALID_STATUSES, historical_laundry_id, normalize_laundry_id
 
 router = APIRouter(tags=["shops"])
 
@@ -108,7 +119,7 @@ class ShopCreate(BaseModel):
     # Optional initial administrator
     admin_auth_id: Optional[str] = Field(default=None, max_length=64)
     admin_user_name: Optional[str] = Field(default=None, max_length=120)
-    admin_password: Optional[str] = Field(default=None, max_length=128)
+    admin_password: Optional[str] = Field(default=None, min_length=8, max_length=128)
     admin_email: Optional[str] = Field(default=None, max_length=120)
 
 
@@ -133,6 +144,10 @@ class StatusPayload(BaseModel):
 class MemberPayload(BaseModel):
     auth_id: str = Field(min_length=1, max_length=64)
     role: Optional[str] = Field(default=None, max_length=32)
+    user_name: Optional[str] = Field(default=None, max_length=120)
+    # Required only when the portal login does not exist yet.
+    password: Optional[str] = Field(default=None, min_length=8, max_length=128)
+    email: Optional[str] = Field(default=None, max_length=120)
 
 
 def _user_response(user: Dict[str, Any]) -> Dict[str, Any]:
@@ -250,6 +265,21 @@ def create_shop(payload: ShopCreate, admin: dict = Depends(require_platform_admi
                 user_doc["email_search"] = get_search_token(payload.admin_email.strip())
             users_collection.insert_one(encrypt_dict(user_doc, SENSITIVE_FIELDS))
 
+        # The standalone shop portal authenticates against client_accounts,
+        # not the staff users table. Provision the matching login so the first
+        # administrator can actually sign in after registration.
+        assign_login_to_entity(
+            auth_id=auth_id_clean,
+            client_type="SHOP",
+            laundry_id=laundry_slug,
+            entity_id=slug,
+            client_name=payload.name.strip(),
+            user_name=user_name_clean,
+            email=payload.admin_email,
+            password=payload.admin_password,
+            role="SHOP_ADMIN",
+        )
+
     return _serialize(document)
 
 
@@ -302,6 +332,10 @@ def set_status(
             {"$set": {"shops": entries, "updated_at": now}},
         )
 
+    # Portal logins live in a separate collection. They must follow the same
+    # entity status or a suspended shop would still be readable in its app.
+    set_entity_login_status(client_type="SHOP", entity_id=slug, status=wanted)
+
     doc["status"] = wanted
     doc["updated_at"] = now
     return _serialize(doc)
@@ -314,22 +348,52 @@ def list_members(shop_id: str, _admin: dict = Depends(require_platform_admin)):
     doc = _get_shop(shop_id)
     slug = doc["shop_id"]
     members: List[Dict[str, Any]] = []
+    by_login: set[str] = set()
+
+    # The portal reads client_accounts, so that is the authoritative roster.
+    for account in client_accounts_collection.find({"shop_id": slug}):
+        login = str(account.get("auth_id") or "").strip()
+        if not login:
+            continue
+        by_login.add(login)
+        members.append(
+            {
+                "id": str(account.get("_id")),
+                "auth_id": login,
+                "user_name": account.get("user_name") or account.get("client_name"),
+                "shop_id": slug,
+                "role": account.get("role_id"),
+                "status": account.get("status"),
+                "source": "client",
+                "created_at": account.get("created_at"),
+            }
+        )
+
+    # Keep the legacy staff roster visible, but never let it overrule a portal
+    # login's role or status. A generic STAFF alias is not portal access.
     for user in users_collection.find({"shops.id": slug}):
+        login = str(user.get("auth_id") or "").strip()
+        if login in by_login:
+            continue
         for entry in (user.get("shops") or []):
             if entry.get("id") != slug:
                 continue
+            by_login.add(login)
             members.append(
                 {
                     "id": str(user["_id"]),
-                    "auth_id": user.get("auth_id"),
+                    "auth_id": login,
                     "user_name": user.get("user_name"),
                     "shop_id": slug,
                     "role": entry.get("role") or str(user.get("role_id") or "").upper(),
                     "status": entry.get("status"),
+                    "source": "staff",
                     "created_at": user.get("created_at"),
                 }
             )
-    return members
+            break
+
+    return sorted(members, key=lambda row: str(row.get("auth_id") or "").lower())
 
 
 @router.post("/shops/{shop_id}/members", status_code=201)
@@ -340,32 +404,49 @@ def add_member(
 ):
     doc = _get_shop(shop_id)
     slug = doc["shop_id"]
-    user = users_collection.find_one({"auth_id": payload.auth_id.strip()})
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    login = payload.auth_id.strip()
+    # Portal roles are entity-specific. Accepting ADMIN/MANAGER/STAFF here used
+    # to create a staff alias that looked assigned in this dialog but could
+    # never sign in to the standalone shop app.
+    role = normalize_entity_role(payload.role or "SHOP_STAFF", "shops")
 
-    # Add or update shop membership
-    existing_shops = user.get("shops") or []
-    updated = [
-        {**entry, "role": payload.role, "status": ACTIVE} if entry.get("id") == slug else entry
-        for entry in existing_shops
-    ]
-    if not any(entry.get("id") == slug for entry in updated):
-        updated.append({
-            "id": slug,
-            "name": doc.get("name"),
-            "role": payload.role,
-            "status": ACTIVE,
-        })
+    # Staff membership is kept for compatibility, but a portal login is no
+    # longer required to exist in the users table first.
+    user = users_collection.find_one({"auth_id": login})
+    if user:
+        existing_shops = user.get("shops") or []
+        updated = [
+            {**entry, "role": role, "status": ACTIVE} if entry.get("id") == slug else entry
+            for entry in existing_shops
+        ]
+        if not any(entry.get("id") == slug for entry in updated):
+            updated.append({
+                "id": slug,
+                "name": doc.get("name"),
+                "role": role,
+                "status": ACTIVE,
+            })
+        users_collection.update_one({"_id": user["_id"]}, {"$set": {"shops": updated}})
 
-    users_collection.update_one({"_id": user["_id"]}, {"$set": {"shops": updated}})
+    account = assign_login_to_entity(
+        auth_id=login,
+        client_type="SHOP",
+        laundry_id=doc.get("associated_laundry_id") or historical_laundry_id(),
+        entity_id=slug,
+        client_name=doc.get("name") or slug,
+        role=role,
+        user_name=payload.user_name or (user or {}).get("user_name"),
+        email=payload.email or (user or {}).get("email"),
+        password=payload.password,
+    )
     return {
-        "id": str(user["_id"]),
-        "auth_id": user.get("auth_id"),
-        "user_name": user.get("user_name"),
+        "id": str(user["_id"]) if user else str(account.get("id") or ""),
+        "auth_id": login,
+        "user_name": payload.user_name or (user or {}).get("user_name") or account.get("user_name"),
         "shop_id": slug,
-        "role": payload.role or str(user.get("role_id") or "").upper(),
+        "role": role,
         "status": ACTIVE,
+        "source": "client",
     }
 
 
@@ -378,18 +459,25 @@ def remove_member(
     doc = _get_shop(shop_id)
     slug = doc["shop_id"]
     user = users_collection.find_one({"auth_id": auth_id})
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    if user:
+        entries = [entry for entry in (user.get("shops") or []) if entry.get("id") != slug]
+        users_collection.update_one({"_id": user["_id"]}, {"$set": {"shops": entries}})
 
-    entries = [entry for entry in (user.get("shops") or []) if entry.get("id") != slug]
-    users_collection.update_one({"_id": user["_id"]}, {"$set": {"shops": entries}})
+    removed_portal_access = unassign_login_from_entity(
+        auth_id=auth_id,
+        client_type="SHOP",
+        laundry_id=doc.get("associated_laundry_id") or historical_laundry_id(),
+        entity_id=slug,
+    )
+    if not user and not removed_portal_access:
+        raise HTTPException(status_code=404, detail="Member not found")
     return {"message": "Membership revoked", "auth_id": auth_id, "shop_id": slug}
 
 
 class AdminUserCreate(BaseModel):
     auth_id: str = Field(min_length=1, max_length=64)
     user_name: str = Field(min_length=1, max_length=120)
-    password: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=8, max_length=128)
     email: Optional[str] = Field(default=None, max_length=120)
     role: Optional[str] = Field(default="SHOP_ADMIN", max_length=32)
 
@@ -404,7 +492,7 @@ def create_shop_admin(
     slug = doc["shop_id"]
     auth_id_clean = payload.auth_id.strip()
     user_name_clean = payload.user_name.strip()
-    role_clean = str(payload.role or "SHOP_ADMIN").strip().upper()
+    role_clean = normalize_entity_role(payload.role or "SHOP_ADMIN", "shops")
 
     existing = users_collection.find_one({"auth_id": auth_id_clean})
     if existing:
@@ -436,6 +524,17 @@ def create_shop_admin(
         user_doc["email_search"] = get_search_token(payload.email.strip())
 
     result = users_collection.insert_one(encrypt_dict(user_doc, SENSITIVE_FIELDS))
+    assign_login_to_entity(
+        auth_id=auth_id_clean,
+        client_type="SHOP",
+        laundry_id=doc.get("associated_laundry_id") or historical_laundry_id(),
+        entity_id=slug,
+        client_name=doc.get("name") or slug,
+        user_name=user_name_clean,
+        email=payload.email,
+        password=payload.password,
+        role=role_clean,
+    )
     return {
         "id": str(result.inserted_id),
         "auth_id": auth_id_clean,

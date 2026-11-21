@@ -62,8 +62,15 @@ from .database.main_db import (
 )
 
 from .auth_helper import DISABLED_STATUSES, create_access_token, security, verify_token
-from .entity_memberships import normalize_entity_id
-from .memberships import ACTIVE, ARCHIVED, SUSPENDED, VALID_STATUSES, normalize_laundry_id
+from .entity_memberships import ENTITY_ROLES, normalize_entity_id
+from .memberships import (
+    ACTIVE,
+    ARCHIVED,
+    SUSPENDED,
+    VALID_STATUSES,
+    historical_laundry_id,
+    normalize_laundry_id,
+)
 
 # A client account belongs to one of two sides of the business, and the side is
 # part of the identity rather than a UI concern: it decides which portal the
@@ -74,8 +81,8 @@ CLIENT_TYPES = {"HOTEL": "SHOP", "SHOP": "HOTEL"}  # value is the opposite side
 # both sides: cross-side access is not expressible, so it cannot be granted by
 # accident through a role string.
 CLIENT_ROLES = {
-    "HOTEL": {"HOTEL_ADMIN", "HOTEL_MANAGER"},
-    "SHOP": {"SHOP_ADMIN", "SHOP_STAFF"},
+    "HOTEL": ENTITY_ROLES["hotels"],
+    "SHOP": ENTITY_ROLES["shops"],
 }
 
 CLIENT_NAME_MAX = 120
@@ -213,24 +220,32 @@ def resolve_client_entity(
     id_field = _entity_id_field(side)
     name = normalize_client_name(client_name) if client_name else ""
 
+    # Pre-multi-tenancy entity rows have no associated_laundry_id. They belong
+    # to the historical laundry, so resolve them there rather than leaving old
+    # registrations unable to sign in to their own portal.
+    if slug == historical_laundry_id():
+        scope_query: Dict[str, Any] = {
+            "$or": [
+                {"associated_laundry_id": slug},
+                {"associated_laundry_id": {"$exists": False}},
+                {"associated_laundry_id": None},
+            ]
+        }
+    else:
+        scope_query = {"associated_laundry_id": slug}
+
     doc = None
     if str(explicit or "").strip():
         wanted = normalize_entity_id(explicit)
         try:
-            doc = collection.find_one(
-                {id_field: wanted, "associated_laundry_id": slug}
-            )
+            doc = collection.find_one({id_field: wanted, **scope_query})
         except Exception:
             doc = None
         if not doc:
             raise HTTPException(status_code=404, detail="No such entity in this laundry")
     elif name:
         try:
-            matches = list(
-                collection.find(
-                    {"associated_laundry_id": slug, "name": name}
-                ).limit(2)
-            )
+            matches = list(collection.find({**scope_query, "name": name}).limit(2))
         except Exception:
             matches = []
         # Only adopt an unambiguous name match; two hotels sharing a name must
@@ -564,3 +579,124 @@ def set_status(account_id: str, status: Any) -> Dict[str, Any]:
     if not result:
         raise HTTPException(status_code=404, detail="Client account not found")
     return public_view(result)
+
+
+def _entity_fields(side: str) -> tuple[str, str]:
+    own = "hotel_id" if side == "HOTEL" else "shop_id"
+    other = "shop_id" if side == "HOTEL" else "hotel_id"
+    return own, other
+
+
+def assign_login_to_entity(
+    *,
+    auth_id: Any,
+    client_type: Any,
+    laundry_id: Any,
+    entity_id: Any,
+    client_name: Any,
+    role: Any,
+    user_name: Any | None = None,
+    email: Any | None = None,
+    password: str | None = None,
+) -> Dict[str, Any]:
+    """Bind a client login to a hotel/shop so the standalone portal can use it.
+
+    Existing logins are relinked in place. A brand-new login is created only
+    when a password is supplied — silently inventing one would leave an account
+    nobody can enter. All writes stay inside `client_accounts_collection`: the
+    staff `users` roster is a separate identity and is not granted portal scope.
+    """
+    login = normalize_auth_id(auth_id)
+    side = normalize_client_type(client_type)
+    normalized_role = normalize_role(role, side)
+    slug = normalize_entity_id(entity_id)
+    laundry = normalize_laundry_id(laundry_id)
+    name = normalize_client_name(client_name)
+    own, other = _entity_fields(side)
+
+    doc = client_accounts_collection.find_one({"laundry_id": laundry, "auth_id": login})
+    if not doc:
+        elsewhere = client_accounts_collection.find_one({"auth_id": login})
+        if elsewhere:
+            other_side = normalize_client_type(elsewhere.get("client_type"))
+            if other_side != side:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"This login is a {other_side} account; use {other_side} roles",
+                )
+            raise HTTPException(
+                status_code=400,
+                detail="This login belongs to a different laundry",
+            )
+        if not password:
+            raise HTTPException(
+                status_code=400,
+                detail="A password is required to create a new portal login",
+            )
+        return create_client_account(
+            laundry_id=laundry,
+            client_name=name,
+            auth_id=login,
+            user_name=user_name or login,
+            password=password,
+            email=email,
+            role=normalized_role,
+            client_type=side,
+            hotel_id=slug if side == "HOTEL" else None,
+            shop_id=slug if side == "SHOP" else None,
+        )
+
+    if normalize_client_type(doc.get("client_type")) != side:
+        actual = normalize_client_type(doc.get("client_type"))
+        raise HTTPException(
+            status_code=400,
+            detail=f"This login is a {actual} account; use {actual} roles",
+        )
+
+    updates: Dict[str, Any] = {
+        own: slug,
+        other: None,
+        "client_name": name,
+        "role_id": normalized_role,
+        "status": ACTIVE,
+        "updated_at": _now(),
+    }
+    if user_name:
+        updates["user_name"] = str(user_name).strip()[:120]
+    if email:
+        updates["email"] = str(email).strip()
+    client_accounts_collection.update_one({"_id": doc["_id"]}, {"$set": updates})
+    return public_view(client_accounts_collection.find_one({"_id": doc["_id"]}))
+
+
+def unassign_login_from_entity(
+    *, auth_id: Any, client_type: Any, laundry_id: Any, entity_id: Any
+) -> bool:
+    """Remove one entity association from a client login. Returns True if changed."""
+    login = normalize_auth_id(auth_id)
+    side = normalize_client_type(client_type)
+    own, _ = _entity_fields(side)
+    slug = normalize_entity_id(entity_id)
+    result = client_accounts_collection.update_one(
+        {
+            "laundry_id": normalize_laundry_id(laundry_id),
+            "auth_id": login,
+            "client_type": side,
+            own: slug,
+        },
+        {"$set": {own: None, "updated_at": _now()}},
+    )
+    return result.modified_count > 0
+
+
+def set_entity_login_status(
+    *, client_type: Any, entity_id: Any, status: Any
+) -> int:
+    """Cascade an entity's status to every client login bound to it."""
+    side = normalize_client_type(client_type)
+    own, _ = _entity_fields(side)
+    result = client_accounts_collection.update_many(
+        {own: normalize_entity_id(entity_id)},
+        {"$set": {"status": normalize_status(status), "updated_at": _now()}},
+    )
+    return result.modified_count

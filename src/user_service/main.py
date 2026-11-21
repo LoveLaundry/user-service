@@ -42,6 +42,7 @@ from .entity_memberships import (
     grant_entity_membership,
     revoke_entity_membership,
     normalize_entity_id,
+    normalize_entity_role,
 )
 from .client_associations import (
     list_associations as list_client_associations,
@@ -593,7 +594,7 @@ def create_user(
         hotel_entry = {
             "id": h_slug,
             "name": h_name,
-            "role": role if role.startswith("HOTEL_") else "HOTEL_ADMIN",
+            "role": normalize_entity_role(role or "HOTEL_ADMIN", "hotels"),
             "status": ACTIVE,
         }
         existing_hotels = created.get("hotels") or []
@@ -614,7 +615,7 @@ def create_user(
         shop_entry = {
             "id": s_slug,
             "name": s_name,
-            "role": role if role.startswith("SHOP_") else "SHOP_ADMIN",
+            "role": normalize_entity_role(role or "SHOP_ADMIN", "shops"),
             "status": ACTIVE,
         }
         existing_shops = created.get("shops") or []
@@ -956,7 +957,7 @@ def grant_hotel_membership(
         raise HTTPException(status_code=400, detail=f"status must be one of {sorted(VALID_STATUSES)}")
 
     caller_role = str(current_user.get("role") or "").upper()
-    grant_role = str(payload.role or "").strip().upper()
+    grant_role = normalize_entity_role(payload.role or "HOTEL_MANAGER", "hotels")
 
     # HOTEL_ADMIN can only grant non-admin roles within their own hotel
     if caller_role == "HOTEL_ADMIN":
@@ -984,7 +985,7 @@ def grant_hotel_membership(
     slug = normalize_entity_id(payload.hotel_id)
     user = _load_user(repo, _coerce_user_id(user_id))
     entries = grant_entity_membership(
-        user, slug, "hotels", name=payload.name, role=payload.role, status=status
+        user, slug, "hotels", name=payload.name, role=grant_role, status=status
     )
     return {"hotels": _persist_entity_memberships(repo, _coerce_user_id(user_id), "hotels", entries)}
 
@@ -1100,7 +1101,7 @@ def grant_shop_membership(
         raise HTTPException(status_code=400, detail=f"status must be one of {sorted(VALID_STATUSES)}")
 
     caller_role = str(current_user.get("role") or "").upper()
-    grant_role = str(payload.role or "").strip().upper()
+    grant_role = normalize_entity_role(payload.role or "SHOP_STAFF", "shops")
 
     # SHOP_ADMIN can only grant non-admin roles within their own shop
     if caller_role == "SHOP_ADMIN":
@@ -1128,7 +1129,7 @@ def grant_shop_membership(
     slug = normalize_entity_id(payload.shop_id)
     user = _load_user(repo, _coerce_user_id(user_id))
     entries = grant_entity_membership(
-        user, slug, "shops", name=payload.name, role=payload.role, status=status
+        user, slug, "shops", name=payload.name, role=grant_role, status=status
     )
     return {"shops": _persist_entity_memberships(repo, _coerce_user_id(user_id), "shops", entries)}
 
