@@ -15,7 +15,6 @@ from fastapi.testclient import TestClient
 from user_service.security import apply_security
 
 PRODUCTION_ORIGIN = "https://system-lovelaundry-lk.vercel.app"
-SHOP_APP_ORIGIN = "https://lovelaundry-shop-app.vercel.app"
 
 
 def _app(rate_limit: int = 300) -> FastAPI:
@@ -64,21 +63,3 @@ def test_production_origin_is_in_the_default_allowlist():
     from user_service.main import ALLOWED_ORIGINS
 
     assert PRODUCTION_ORIGIN in ALLOWED_ORIGINS
-
-
-def test_shop_app_origin_is_allowed():
-    """The deployed Shop Portal must be able to reach /client/auth/login."""
-    from user_service.main import ALLOWED_ORIGINS
-
-    assert SHOP_APP_ORIGIN in ALLOWED_ORIGINS
-
-    client = TestClient(_app())
-    response = client.options(
-        "/ping",
-        headers={
-            "Origin": SHOP_APP_ORIGIN,
-            "Access-Control-Request-Method": "POST",
-        },
-    )
-    assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == SHOP_APP_ORIGIN

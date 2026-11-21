@@ -19,41 +19,21 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Deployments inject either MONGODB_MAIN_URI (self-hosted) or DATABASE_URL
-# (Vercel); accept both. The DB name follows the same convention.
-MONGODB_URI = os.getenv("MONGODB_MAIN_URI") or os.getenv("DATABASE_URL")
-MONGODB_DB = (
-    os.getenv("MONGODB_MAIN_DB")
-    or os.getenv("MONGODB_DB_NAME")
-    or "laundry_management"
-)
+MONGODB_URI = os.getenv("MONGODB_MAIN_URI")
+MONGODB_DB = os.getenv("MONGODB_MAIN_DB", "users_db")
+if not MONGODB_URI:
+    print("ERROR: MONGODB_MAIN_URI not set in environment")
+    sys.exit(1)
 
-client = None
-db = None
+client = MongoClient(MONGODB_URI)
+db = client[MONGODB_DB]
 
 # Collections
-shops_collection = None
-laundries_collection = None
-client_accounts_collection = None
+shops_collection = db["shops"]
+laundries_collection = db["laundries"]
+client_accounts_collection = db["client_accounts"]
 # Operational collections to backfill
-shop_bills_collection = None
-
-
-def connect():
-    """Bind the collections to the configured database."""
-    global client, db
-    global shops_collection, laundries_collection, client_accounts_collection, shop_bills_collection
-
-    if not MONGODB_URI:
-        print("ERROR: set MONGODB_MAIN_URI or DATABASE_URL in the environment")
-        sys.exit(1)
-
-    client = MongoClient(MONGODB_URI)
-    db = client[MONGODB_DB]
-    shops_collection = db["shops"]
-    laundries_collection = db["laundries"]
-    client_accounts_collection = db["client_accounts"]
-    shop_bills_collection = db["shop_bills"]
+shop_bills_collection = db["shop_bills"]
 
 
 def analyze_shop_names():
@@ -235,18 +215,13 @@ def verify_migration():
 
 
 def main():
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Migrate shop client names to shop entities.")
-    parser.add_argument("--dry-run", "-d", action="store_true", help="Report what would change")
-    args = parser.parse_args()
-
+    import sys
     print("=" * 60)
     print("Shop Entity Migration Script")
     print("=" * 60)
 
-    connect()
-    dry_run = args.dry_run
+    # Check for dry-run flag
+    dry_run = "--dry-run" in sys.argv or "-d" in sys.argv
     if dry_run:
         print("\n[DRY-RUN MODE] No changes will be made to the database")
         print("=" * 60)

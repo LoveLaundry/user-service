@@ -30,6 +30,9 @@ sync_status_collection: Collection = _db.get_collection("sync_status")
 sync_queue_collection: Collection = _db.get_collection("sync_queue")
 sync_logs_collection: Collection = _db.get_collection("sync_logs")
 
+# Admin-managed route access overrides per role
+route_access_overrides_collection: Collection = _db.get_collection("route_access_overrides")
+
 
 def ensure_indexes():
     """Create all required indexes on the MAIN database."""

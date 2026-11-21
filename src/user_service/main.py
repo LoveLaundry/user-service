@@ -5,12 +5,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 import bcrypt
 import base64
+from datetime import datetime, timezone
 
 from .config import DB_TYPE, DatabaseType
 from .repository import UserRepository
 from .repository_factory import close_connections, get_repository
 from .auth_helper import (
-    ACCESS_TOKEN_TTL_HOURS,
     DISABLED_STATUSES,
     create_access_token,
     get_current_user,
@@ -83,17 +83,35 @@ logger = logging.getLogger(__name__)
 # the ALLOWED_ORIGINS env var is not injected by the platform).
 DEFAULT_ALLOWED_ORIGINS = [
     "https://lovelaundry-manager.vercel.app",
-    "https://hotels-manager.vercel.app",
-    "https://hotels-manager-amber.vercel.app",
-    "https://shops-manager.vercel.app",
     "https://system-lovelaundry-lk.vercel.app",
     "https://lovelaundry-shop-app.vercel.app",
+    "https://hotels-manager-amber.vercel.app",
+    "https://hotels-manager.vercel.app",
+    "https://shops-manager.vercel.app",
+    "http://localhost",
+    "http://localhost:3000",
     "http://localhost:5173",
     "http://localhost:5174",
     "http://localhost:5175",
     "http://localhost:5176",
+    "http://127.0.0.1:5173",
+    "http://localhost:8101",
+    "http://127.0.0.1:8101",
+    "http://localhost:8820",
+    "http://127.0.0.1:8820",
+
+    "https://system-lovelaundry-lk.vercel.app",
+    "http://localhost:5173",
     "http://localhost:3000",
+    "https://lovelaundry-manager.vercel.app",
+    "https://lovelaundry-shop-app.vercel.app",
+    "https://hotels-manager-amber.vercel.app",
+    "https://hotels-manager.vercel.app",
+    "https://shops-manager.vercel.app",
     "http://localhost",
+    "http://localhost:5174",
+    "http://localhost:5175",
+    "http://localhost:5176",
     "http://127.0.0.1:5173",
     "http://localhost:8101",
     "http://127.0.0.1:8101",
@@ -265,7 +283,7 @@ def login(payload: LoginPayload, repo: UserRepository = Depends(get_repository))
             detail="This account is inactive. Contact an administrator.",
         )
 
-    role = str(user.get("role_id") or "USER").upper()
+    role = str(user["role_id"]).upper()
 
     # An administrator can disable an account, but the flag was copied into the
     # token and never acted on — a disabled user kept full access until the
@@ -304,7 +322,7 @@ def login(payload: LoginPayload, repo: UserRepository = Depends(get_repository))
         "auth_id": user["auth_id"],
         "user_name": user["user_name"],
         "role": role,
-        "status": user.get("status") or "unset",
+        "status": user["status"],
         "platform_admin": bool(user.get("platform_admin"))
         or str(role).upper() == "PLATFORM_ADMIN",
         # Tenant claims every resource service trusts. Built in one place so
@@ -323,7 +341,7 @@ def login(payload: LoginPayload, repo: UserRepository = Depends(get_repository))
         role
     ).upper() == "PLATFORM_ADMIN"
 
-    token = create_access_token(token_data, expires_in_hours=ACCESS_TOKEN_TTL_HOURS)
+    token = create_access_token(token_data)
     return {
         "access_token": token,
         "token_type": "bearer",
@@ -395,7 +413,7 @@ def bootstrap_first_admin(payload: BootstrapPayload, repo: UserRepository = Depe
     user_response["shops"] = effective_entity_memberships(user, "shops")
     user_response["platform_admin"] = True
     return {
-        "access_token": create_access_token(token_data, expires_in_hours=ACCESS_TOKEN_TTL_HOURS),
+        "access_token": create_access_token(token_data),
         "token_type": "bearer",
         "user": user_response,
     }
@@ -1011,12 +1029,12 @@ def switch_hotel(
         "user_id": user["id"],
         "auth_id": user["auth_id"],
         "user_name": user["user_name"],
-        "role": str(user.get("role_id") or "USER").upper(),
-        "status": user.get("status") or "unset",
+        "role": str(user["role_id"]).upper(),
+        "status": user.get("status"),
         **claims,
     }
     return {
-        "access_token": create_access_token(token_data, expires_in_hours=ACCESS_TOKEN_TTL_HOURS),
+        "access_token": create_access_token(token_data),
         "token_type": "bearer",
         "hotel_id": claims["hotel_id"],
         "hotels": claims["hotels"],
@@ -1155,12 +1173,12 @@ def switch_shop(
         "user_id": user["id"],
         "auth_id": user["auth_id"],
         "user_name": user["user_name"],
-        "role": str(user.get("role_id") or "USER").upper(),
-        "status": user.get("status") or "unset",
+        "role": str(user["role_id"]).upper(),
+        "status": user.get("status"),
         **claims,
     }
     return {
-        "access_token": create_access_token(token_data, expires_in_hours=ACCESS_TOKEN_TTL_HOURS),
+        "access_token": create_access_token(token_data),
         "token_type": "bearer",
         "shop_id": claims["shop_id"],
         "shops": claims["shops"],
@@ -1182,14 +1200,14 @@ def switch_laundry(
         "user_id": user["id"],
         "auth_id": user["auth_id"],
         "user_name": user["user_name"],
-        "role": str(user.get("role_id") or "USER").upper(),
-        "status": user.get("status") or "unset",
+        "role": str(user["role_id"]).upper(),
+        "status": user.get("status"),
         **claims,
         **build_entity_claims(user, "hotels"),
         **build_entity_claims(user, "shops"),
     }
     return {
-        "access_token": create_access_token(token_data, expires_in_hours=ACCESS_TOKEN_TTL_HOURS),
+        "access_token": create_access_token(token_data),
         "token_type": "bearer",
         "laundry_id": claims["laundry_id"],
         "laundries": claims["laundries"],
@@ -1383,20 +1401,20 @@ def refresh_token(
             detail="This account is inactive. Contact an administrator.",
         )
 
-    role = str(user.get("role_id") or "USER").upper()
+    role = str(user["role_id"]).upper()
     token_data = {
         "user_id": user["id"],
         "auth_id": user["auth_id"],
         "user_name": user["user_name"],
         "role": role,
-        "status": user.get("status") or "unset",
+        "status": user["status"],
         "platform_admin": bool(user.get("platform_admin"))
         or role == "PLATFORM_ADMIN",
         **build_claims(user, current_user.get("laundry_id")),
         **build_entity_claims(user, "hotels", current_user.get("hotel_id")),
         **build_entity_claims(user, "shops", current_user.get("shop_id")),
     }
-    return {"access_token": create_access_token(token_data, expires_in_hours=ACCESS_TOKEN_TTL_HOURS), "token_type": "bearer"}
+    return {"access_token": create_access_token(token_data), "token_type": "bearer"}
 
 
 @app.post("/client/auth/refresh")
@@ -1496,3 +1514,49 @@ def list_client_staff(session: dict = Depends(get_client_session)):
         elif str(account.get("client_name")) == scope["client_name"]:
             items.append(account)
     return {"items": items, "total": len(items), field: entity_id or None}
+
+
+class RouteAccessUpdate(BaseModel):
+    role: str = Field(..., min_length=1, max_length=64)
+    disabled_routes: list[str] = Field(default_factory=list)
+
+
+@app.get("/admin/route-access")
+async def admin_get_route_access(current_user: dict = Depends(require_role(["ADMIN", "PLATFORM_ADMIN"]))):
+    from .database.main_db import route_access_overrides_collection
+
+    docs = list(route_access_overrides_collection.find({}, {"_id": 0}))
+    out = {}
+    for d in docs:
+        role = str(d.get("role") or "").upper()
+        if not role:
+            continue
+        out[role] = {"disabled_routes": d.get("disabled_routes") or []}
+    return {"overrides": out}
+
+
+@app.put("/admin/route-access")
+async def admin_put_route_access(payload: RouteAccessUpdate, current_user: dict = Depends(require_role(["ADMIN", "PLATFORM_ADMIN"]))):
+    from .database.main_db import route_access_overrides_collection
+
+    role = str(payload.role or "").strip().upper()
+    if not role:
+        raise HTTPException(status_code=400, detail="role is required")
+    disabled = []
+    for p in (payload.disabled_routes or []):
+        ps = str(p or "").strip()
+        if ps.startswith("/"):
+            disabled.append(ps)
+    route_access_overrides_collection.update_one(
+        {"role": role},
+        {
+            "$set": {
+                "role": role,
+                "disabled_routes": disabled,
+                "updated_at": datetime.now(timezone.utc),
+                "updated_by": current_user.get("user_id"),
+            }
+        },
+        upsert=True,
+    )
+    return {"role": role, "disabled_routes": disabled}
