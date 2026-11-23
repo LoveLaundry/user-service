@@ -59,7 +59,7 @@ def test_laundry_admin_cannot_create_another_laundry_admin(client, mocked_db):
     payload = {
         "user_name": "New Laundry Admin",
         "auth_id": "new.laundry.admin",
-        "password": "password123",
+        "password": "password123456",
         "role_id": "ADMIN",
     }
     response = client.post("/users", json=payload, headers=headers)
@@ -73,7 +73,7 @@ def test_laundry_admin_cannot_create_platform_admin(client, mocked_db):
     payload = {
         "user_name": "New Platform Admin",
         "auth_id": "new.plat.admin",
-        "password": "password123",
+        "password": "password123456",
         "role_id": "PLATFORM_ADMIN",
     }
     response = client.post("/users", json=payload, headers=headers)
@@ -86,7 +86,7 @@ def test_platform_admin_can_create_laundry_admin(client, mocked_db):
     payload = {
         "user_name": "Brand New Laundry Admin",
         "auth_id": "brand.new.admin",
-        "password": "password123",
+        "password": "password123456",
         "role_id": "ADMIN",
         "laundry_id": "lovelaundry",
     }
@@ -103,7 +103,7 @@ def test_laundry_admin_can_create_staff_or_manager(client, mocked_db):
     payload = {
         "user_name": "Regular Staff",
         "auth_id": "regular.staff.1",
-        "password": "password123",
+        "password": "password123456",
         "role_id": "STAFF",
     }
     response = client.post("/users", json=payload, headers=headers)
@@ -273,7 +273,7 @@ def test_laundry_admin_cannot_create_hotel_admin_via_users(client, mocked_db):
     payload = {
         "user_name": "New Hotel Admin",
         "auth_id": "new.hotel.admin.u",
-        "password": "password123",
+        "password": "password123456",
         "role_id": "HOTEL_ADMIN",
         "hotel_id": "hilton",
     }
@@ -288,7 +288,7 @@ def test_laundry_admin_cannot_create_shop_admin_via_users(client, mocked_db):
     payload = {
         "user_name": "New Shop Admin",
         "auth_id": "new.shop.admin.u",
-        "password": "password123",
+        "password": "password123456",
         "role_id": "SHOP_ADMIN",
         "shop_id": "quickwash",
     }
@@ -303,7 +303,7 @@ def test_platform_admin_can_create_hotel_admin_via_users(client, mocked_db):
     payload = {
         "user_name": "Hotel Admin User",
         "auth_id": "hotel.admin.direct",
-        "password": "password123",
+        "password": "password123456",
         "role_id": "HOTEL_ADMIN",
         "hotel_id": "cinnamon-grand",
     }
@@ -321,7 +321,7 @@ def test_platform_admin_can_create_shop_admin_via_users(client, mocked_db):
     payload = {
         "user_name": "Shop Admin User",
         "auth_id": "shop.admin.direct",
-        "password": "password123",
+        "password": "password123456",
         "role_id": "SHOP_ADMIN",
         "shop_id": "kandy-shop",
     }

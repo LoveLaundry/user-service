@@ -434,52 +434,74 @@ def auth_status(current_user: dict = Depends(get_current_user)):
 # ── User routes (admin only) ─────────────────────────────────────────────────────
 # IMPORTANT: Static paths MUST come before wildcard {user_id} paths.
 
+def _scoped_user_directory(current_user: dict, repo: UserRepository) -> list:
+    """Every user the caller may see; platform admins see the whole directory."""
+    users = repo.get_all()
+    if is_platform_admin(current_user):
+        return users
+    field, scope = _caller_scope(current_user)
+    return [user for user in users if _has_active_membership(user, field, scope)]
+
+
 @app.get("/users", response_model=list[UserResponse], dependencies=[Depends(require_role(["ADMIN"]))])
-def get_all_users(repo: UserRepository = Depends(get_repository)):
-    return repo.get_all()
+def get_all_users(
+    current_user: dict = Depends(get_current_user),
+    repo: UserRepository = Depends(get_repository),
+):
+    return _scoped_user_directory(current_user, repo)
 
 
 @app.get("/users/count", dependencies=[Depends(require_role(["ADMIN"]))])
-def count_users(repo: UserRepository = Depends(get_repository)):
-    return {"count": repo.count()}
+def count_users(
+    current_user: dict = Depends(get_current_user),
+    repo: UserRepository = Depends(get_repository),
+):
+    return {"count": len(_scoped_user_directory(current_user, repo))}
 
 
 @app.get("/users/auth/{auth_id}", response_model=UserResponse, dependencies=[Depends(require_role(["ADMIN"]))])
 def get_user_by_auth_id(
     auth_id: str,
+    current_user: dict = Depends(get_current_user),
     repo: UserRepository = Depends(get_repository),
 ):
     user = repo.get_by_auth_id(auth_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    _require_user_scope(current_user, user)
     return user
 
 
 @app.get("/users/email/{email}", response_model=UserResponse, dependencies=[Depends(require_role(["ADMIN"]))])
 def get_user_by_email(
     email: str,
+    current_user: dict = Depends(get_current_user),
     repo: UserRepository = Depends(get_repository),
 ):
     user = repo.get_by_email(email)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    _require_user_scope(current_user, user)
     return user
 
 
 @app.get("/users/employee/{employee_id}", response_model=UserResponse, dependencies=[Depends(require_role(["ADMIN"]))])
 def get_user_by_employee_id(
     employee_id: str,
+    current_user: dict = Depends(get_current_user),
     repo: UserRepository = Depends(get_repository),
 ):
     user = repo.get_by_employee_id(employee_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    _require_user_scope(current_user, user)
     return user
 
 
 @app.get("/users/{user_id}", response_model=UserResponse, dependencies=[Depends(require_role(["ADMIN"]))])
 def get_user(
     user_id: Union[int, str],
+    current_user: dict = Depends(get_current_user),
     repo: UserRepository = Depends(get_repository),
 ):
     if DB_TYPE == DatabaseType.MONGODB:
@@ -489,6 +511,7 @@ def get_user(
 
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    _require_user_scope(current_user, user)
     return user
 
 
@@ -520,6 +543,88 @@ def _check_admin_target(repo: UserRepository, user_id: Union[int, str], current_
     return target_user
 
 
+def _has_active_membership(user: dict, field: str, scope: str) -> bool:
+    """True when ``user`` has an ACTIVE membership for ``scope`` in ``field``."""
+    if not scope:
+        return False
+    if field == "laundries":
+        # Legacy accounts have no stored membership; effective_memberships()
+        # supplies the historical one, as it does at login.
+        entries = effective_memberships(user)
+    else:
+        entries = effective_entity_memberships(user, field)
+    return any(
+        str(entry.get("id") or "").strip().lower() == str(scope).strip().lower()
+        and str(entry.get("status") or "").strip().upper() == ACTIVE
+        for entry in entries
+        if isinstance(entry, dict)
+    )
+
+
+def _caller_scope(current_user: dict) -> tuple[str, str]:
+    """Return the membership field and id the caller is operating in."""
+    role = str(current_user.get("role") or "").strip().upper()
+    for role_name, field, claim in (
+        ("HOTEL_ADMIN", "hotels", "hotel_id"),
+        ("SHOP_ADMIN", "shops", "shop_id"),
+    ):
+        entity_id = current_user.get(claim)
+        if role == role_name and entity_id and _has_active_membership(current_user, field, entity_id):
+            return field, entity_id
+    # ADMIN (and any other staff role) is scoped to its active laundry. This
+    # also validates that the caller's own membership is still ACTIVE.
+    return "laundries", resolve_laundry_id(current_user)
+
+
+def _require_user_scope(current_user: dict, target_user: dict, allow_self: bool = False) -> None:
+    """Fail closed when a non-platform admin reaches outside its own tenant.
+
+    Platform administrators (including audited support-entry sessions) may
+    reach any account. Everyone else may touch only accounts holding an ACTIVE
+    membership in the same laundry — or the same hotel/shop for entity admins —
+    plus their own account where the caller explicitly allows it.
+    """
+    if is_platform_admin(current_user) or current_user.get("support_entry"):
+        return
+    if allow_self and str(current_user.get("user_id")) == str(target_user.get("id")):
+        return
+    field, scope = _caller_scope(current_user)
+    if not _has_active_membership(target_user, field, scope):
+        raise HTTPException(
+            status_code=403,
+            detail="You can only access users in your active tenant",
+        )
+
+
+def _assert_own_scope_targets(current_user: dict, payload: UserCreate) -> None:
+    """Reject membership grants into a tenant the caller is not active in."""
+    if is_platform_admin(current_user):
+        return
+    if payload.laundry_id and normalize_laundry_id(payload.laundry_id) != resolve_laundry_id(current_user):
+        raise HTTPException(
+            status_code=403,
+            detail="You can only add users to your active laundry",
+        )
+    for field, claim, label in (
+        ("hotels", "hotel_id", "hotel"),
+        ("shops", "shop_id", "shop"),
+    ):
+        supplied = getattr(payload, claim)
+        if not supplied:
+            continue
+        slug = normalize_laundry_id(supplied)
+        allowed = {
+            str(entry.get("id"))
+            for entry in effective_entity_memberships(current_user, field)
+            if str(entry.get("status") or "").upper() == ACTIVE
+        }
+        if slug not in allowed:
+            raise HTTPException(
+                status_code=403,
+                detail=f"You can only add users to your active {label}",
+            )
+
+
 @app.post("/users", response_model=UserResponse, status_code=201, dependencies=[Depends(require_role(["ADMIN"]))])
 def create_user(
     payload: UserCreate,
@@ -539,6 +644,11 @@ def create_user(
                 status_code=403,
                 detail=msg,
             )
+
+    # The caller's tenant comes from the verified, freshly rebuilt claims —
+    # never from the request body. Without this check a tenant admin could
+    # create staff in another tenant by supplying its laundry/hotel/shop id.
+    _assert_own_scope_targets(current_user, payload)
 
     if repo.exists_by_auth_id(payload.auth_id):
         raise HTTPException(status_code=400, detail="Auth ID already exists")
@@ -634,7 +744,8 @@ def update_user(
     repo: UserRepository = Depends(get_repository),
 ):
     resolved_user_id = _coerce_user_id(user_id)
-    _check_admin_target(repo, resolved_user_id, current_user)
+    target_user = _check_admin_target(repo, resolved_user_id, current_user)
+    _require_user_scope(current_user, target_user)
 
     if not is_platform_admin(current_user):
         if payload.role_id and str(payload.role_id).strip().upper() in {"ADMIN", "LAUNDRY_ADMIN", "PLATFORM_ADMIN", "HOTEL_ADMIN", "SHOP_ADMIN"}:
@@ -670,15 +781,28 @@ async def update_profile(
     else:
         resolved_user_id = int(user_id)
 
-    # Only the account owner or an ADMIN may update this profile
+    # Only the account owner or an administrator may update this profile.
+    # Entity admins are included so their (hotel/shop) scope can be enforced
+    # by _require_user_scope below instead of a blanket role check.
     token_uid = str(current_user.get("user_id"))
     is_owner = token_uid == str(user_id)
-    if not (is_owner or str(current_user.get("role", "")).upper() == "ADMIN"):
+    caller_role = str(current_user.get("role") or "").strip().upper()
+    is_admin_editor = is_platform_admin(current_user) or caller_role in {
+        "ADMIN",
+        "LAUNDRY_ADMIN",
+        "HOTEL_ADMIN",
+        "SHOP_ADMIN",
+    }
+    if not (is_owner or is_admin_editor):
         raise HTTPException(status_code=403, detail="Not authorized to update this profile")
 
     user = repo.get_by_id(resolved_user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    if not is_owner:
+        # Only the account owner or an ADMIN may update this profile, and an
+        # ADMIN may only reach accounts inside its own active tenant.
+        _require_user_scope(current_user, user)
 
     update_data = {}
 
@@ -724,7 +848,8 @@ def update_password(
     repo: UserRepository = Depends(get_repository),
 ):
     resolved_id = _coerce_user_id(user_id)
-    _check_admin_target(repo, resolved_id, current_user, allow_self=True)
+    target_user = _check_admin_target(repo, resolved_id, current_user, allow_self=True)
+    _require_user_scope(current_user, target_user, allow_self=True)
     if not repo.update_password(resolved_id, payload.password):
         raise HTTPException(status_code=404, detail="User not found")
     return {"message": "Password updated successfully"}
@@ -738,7 +863,8 @@ def update_status(
     repo: UserRepository = Depends(get_repository),
 ):
     resolved_id = _coerce_user_id(user_id)
-    _check_admin_target(repo, resolved_id, current_user)
+    target_user = _check_admin_target(repo, resolved_id, current_user)
+    _require_user_scope(current_user, target_user)
     if not repo.update_status(resolved_id, payload.status):
         raise HTTPException(status_code=404, detail="User not found")
     return {"message": "Status updated successfully"}
@@ -751,7 +877,8 @@ def delete_user(
     repo: UserRepository = Depends(get_repository),
 ):
     resolved_id = _coerce_user_id(user_id)
-    _check_admin_target(repo, resolved_id, current_user)
+    target_user = _check_admin_target(repo, resolved_id, current_user)
+    _require_user_scope(current_user, target_user)
     if not repo.delete(resolved_id):
         raise HTTPException(status_code=404, detail="User not found")
     return {"message": "User deleted successfully"}

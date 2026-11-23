@@ -21,7 +21,7 @@ load_dotenv()
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from user_service.config import settings  # noqa: E402
+from user_service.config import resolve_main_db, resolve_main_uri  # noqa: E402
 
 
 def main() -> int:
@@ -31,8 +31,8 @@ def main() -> int:
     parser.add_argument("--list", action="store_true", help="List current platform administrators")
     args = parser.parse_args()
 
-    uri = settings.database_url
-    db_name = settings.mongodb_db_name
+    uri = resolve_main_uri()
+    db_name = resolve_main_db()
     client = MongoClient(uri, serverSelectionTimeoutMS=10000)
     users = client[db_name]["users"]
 

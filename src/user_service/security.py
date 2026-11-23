@@ -150,9 +150,10 @@ def _client_key(request: Request) -> str:
     address, so ``request.client.host`` is the SAME value for every visitor —
     which turns the per-IP limit into a global limit and lets one client deny
     service to everybody. The forwarded client address is used instead, but
-    only when the direct peer is a local/private address (i.e. a trusted
-    reverse proxy). A service exposed directly therefore cannot be tricked
-    into spoofing another client's bucket by setting the header itself.
+    only when the direct peer is in ``TRUSTED_PROXY_CIDRS`` (comma-separated).
+    Being local/private is NOT proof of trust: any container on the same docker
+    network could otherwise spoof a victim's bucket with X-Real-IP. With no
+    CIDRs configured, forwarded headers are ignored completely.
     """
     peer = request.client.host if request.client else None
     if peer and _is_trusted_proxy(peer):
@@ -162,12 +163,32 @@ def _client_key(request: Request) -> str:
     return peer or "unknown"
 
 
+def _trusted_proxy_networks() -> list:
+    """Parse the explicit proxy allowlist from the environment on each call.
+
+    Reading it lazily keeps configuration changes effective without a restart
+    and, more importantly, makes the default fail closed: no env var means no
+    trusted proxies, so client-supplied forwarding headers are never honoured.
+    """
+    networks = []
+    for entry in os.getenv("TRUSTED_PROXY_CIDRS", "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            # A malformed CIDR must never widen trust.
+            continue
+    return networks
+
+
 def _is_trusted_proxy(peer: str) -> bool:
     try:
         address = ipaddress.ip_address(peer)
     except ValueError:
         return False
-    return address.is_loopback or address.is_private or address.is_link_local
+    return any(address in network for network in _trusted_proxy_networks())
 
 
 def _forwarded_client_ip(request: Request) -> Optional[str]:

@@ -28,11 +28,17 @@ security = HTTPBearer()
 DISABLED_STATUSES = {"inactive", "disabled", "suspended", "blocked", "deleted"}
 
 
-def create_access_token(data: dict, expires_in_hours: int = 24) -> str:
-    """Create a signed JWT token containing user info."""
+def create_access_token(data: dict, expires_in_hours: float | None = None) -> str:
+    """Create a signed JWT token containing user info.
+
+    Callers that need a different lifetime (client sessions, support-entry
+    sessions) pass ``expires_in_hours`` explicitly; everyone else gets the
+    configured ``ACCESS_TOKEN_TTL_HOURS`` default.
+    """
+    ttl_hours = ACCESS_TOKEN_TTL_HOURS if expires_in_hours is None else float(expires_in_hours)
     payload = data.copy()
     now = datetime.now(timezone.utc)
-    payload["exp"] = now + timedelta(hours=expires_in_hours)
+    payload["exp"] = now + timedelta(hours=ttl_hours)
     payload["iat"] = now
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
@@ -108,6 +114,19 @@ def get_current_user(credentials=Security(security)) -> dict:
         payload["platform_admin"] = bool(fresh.get("platform_admin")) or str(
             fresh.get("role_id") or ""
         ).upper() == "PLATFORM_ADMIN"
+        # Tenant claims are trusted by every other service. Rebuild them from
+        # the live record on every request: an old token must not keep a
+        # revoked laundry/hotel/shop membership (or a suspended one) alive.
+        # Support-entry tokens are the deliberate exception — their scope is
+        # minted by the tenant registry for an audited session and is not
+        # persisted on the user row, so replacing it would break hand-off.
+        if not payload.get("support_entry"):
+            from .memberships import build_claims
+            from .entity_memberships import build_entity_claims
+
+            payload.update(build_claims(fresh, payload.get("laundry_id")))
+            payload.update(build_entity_claims(fresh, "hotels", payload.get("hotel_id")))
+            payload.update(build_entity_claims(fresh, "shops", payload.get("shop_id")))
 
     return payload
 

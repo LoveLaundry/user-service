@@ -1,10 +1,21 @@
 from .app_time import stamp
 from datetime import datetime
 from typing import Union
-from pydantic import BaseModel, EmailStr, field_serializer
+from pydantic import BaseModel, EmailStr, Field, field_serializer, field_validator
 
 
-class UserCreate(BaseModel):
+class _PasswordPolicy(BaseModel):
+    """Shared staff-password rules; bcrypt silently truncates past 72 bytes."""
+
+    @field_validator("password", check_fields=False)
+    @classmethod
+    def _enforce_byte_limit(cls, value: str | None) -> str | None:
+        if value is not None and len(value.encode("utf-8")) > 72:
+            raise ValueError("Password must be at most 72 bytes")
+        return value
+
+
+class UserCreate(_PasswordPolicy):
     user_name: str
     bio_data: str | None = None
     user_dp: str | None = None
@@ -13,7 +24,8 @@ class UserCreate(BaseModel):
     role_id: str
     employee_id: str | None = None
     auth_id: str
-    password: str
+    # bcrypt silently truncates past 72 bytes; reject longer secrets instead.
+    password: str = Field(min_length=12, max_length=72)
     status: str = "unset"
     tenant: str | None = None
     public_key: str | None = None
@@ -24,7 +36,7 @@ class UserCreate(BaseModel):
     shop_id: str | None = None
 
 
-class UserUpdate(BaseModel):
+class UserUpdate(_PasswordPolicy):
     user_name: str | None = None
     bio_data: str | None = None
     user_dp: str | None = None
@@ -33,15 +45,15 @@ class UserUpdate(BaseModel):
     role_id: str | None = None
     employee_id: str | None = None
     auth_id: str | None = None
-    password: str | None = None
+    password: str | None = Field(default=None, min_length=12, max_length=72)
     status: str | None = None
     public_key: str | None = None
     key_version: int | None = None
     permissions: str | None = None
 
 
-class UserPasswordUpdate(BaseModel):
-    password: str
+class UserPasswordUpdate(_PasswordPolicy):
+    password: str = Field(min_length=12, max_length=72)
 
 
 class UserStatusUpdate(BaseModel):

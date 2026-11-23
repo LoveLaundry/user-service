@@ -51,6 +51,12 @@ def client():
     return TestClient(_app())
 
 
+@pytest.fixture
+def trusted_proxy(monkeypatch):
+    """Opt a test into the configured reverse proxy (trust is opt-in now)."""
+    monkeypatch.setenv("TRUSTED_PROXY_CIDRS", f"{PROXY_PEER[0]}/32")
+
+
 def test_security_headers_are_present(client):
     r = client.get("/ping")
     assert r.status_code == 200
@@ -85,7 +91,7 @@ def test_hsts_is_only_sent_over_https(client):
     )
 
 
-def test_rate_limit_blocks_one_client_only():
+def test_rate_limit_blocks_one_client_only(trusted_proxy):
     """The bucket must be per client address, not global."""
     limit_client = TestClient(_app(limit=2), client=PROXY_PEER)
 
@@ -105,7 +111,7 @@ def test_rate_limit_blocks_one_client_only():
     assert limit_client.get("/ping", headers={"X-Real-IP": VISITOR_B}).status_code == 200
 
 
-def test_forwarded_for_uses_the_last_entry():
+def test_forwarded_for_uses_the_last_entry(trusted_proxy):
     """nginx appends the address it saw, so the right-most entry is the real one."""
     limit_client = TestClient(_app(limit=1), client=PROXY_PEER)
     limit_client.get("/ping", headers={"X-Forwarded-For": VISITOR_A})
@@ -125,7 +131,16 @@ def test_forwarded_headers_are_ignored_from_a_public_peer():
     assert limit_client.get("/ping", headers={"X-Real-IP": VISITOR_A}).status_code == 429
 
 
-def test_client_key_uses_forwarded_address_from_a_local_proxy():
+def test_forwarded_headers_are_ignored_without_an_explicit_proxy_allowlist(monkeypatch):
+    """Private peers are not trusted merely for being on a private network."""
+    monkeypatch.delenv("TRUSTED_PROXY_CIDRS", raising=False)
+    limit_client = TestClient(_app(limit=1), client=PROXY_PEER)
+    assert limit_client.get("/ping", headers={"X-Real-IP": VISITOR_A}).status_code == 200
+    # Same peer => same bucket; the spoofed X-Real-IP did not create another one.
+    assert limit_client.get("/ping", headers={"X-Real-IP": VISITOR_B}).status_code == 429
+
+
+def test_client_key_uses_forwarded_address_from_a_local_proxy(trusted_proxy):
     from starlette.requests import Request
 
     scope = {
