@@ -2,7 +2,7 @@ from typing import Union
 
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 import bcrypt
 import base64
 from datetime import datetime, timezone
@@ -237,7 +237,9 @@ def health():
 # ── Auth routes (public) ────────────────────────────────────────────────────────
 
 class LoginPayload(BaseModel):
-    username: str
+    # The staff apps send `username`; older integrations send `user_name`.
+    # Accept both without changing the canonical field name used downstream.
+    username: str = Field(validation_alias=AliasChoices("username", "user_name"))
     password: str
     # Optional: sign straight into a laundry the user is an ACTIVE member of.
     # Omitted -> the single active membership, if there is exactly one.
@@ -428,7 +430,13 @@ def bootstrap_first_admin(payload: BootstrapPayload, repo: UserRepository = Depe
 
 @app.get("/auth/status")
 def auth_status(current_user: dict = Depends(get_current_user)):
-    return current_user
+    """Live staff session status.
+
+    The flat claims are kept for the existing admin apps; ``user`` is the
+    named envelope the operational clients read. Both point at the same
+    authoritative claims, never a second copy.
+    """
+    return {**current_user, "user": current_user}
 
 
 # ── User routes (admin only) ─────────────────────────────────────────────────────
@@ -1404,7 +1412,7 @@ def client_login(payload: ClientLoginPayload):
 def client_status(session: dict = Depends(get_client_session)):
     """Live session check for the hotel app; never returns a password hash."""
     scope = client_scope_of(session)
-    return {
+    payload = {
         "auth_id": session.get("auth_id"),
         "user_name": session.get("user_name"),
         "role_id": session.get("role"),
@@ -1413,6 +1421,9 @@ def client_status(session: dict = Depends(get_client_session)):
         "client_name": scope["client_name"],
         "client_type": scope["client_type"],
     }
+    # Named envelope for the newer hotel/shop clients; flat fields stay for
+    # the already-shipped apps. No identity is taken from the request body.
+    return {**payload, "client": payload}
 
 
 @app.get("/clients", dependencies=[Depends(require_role(["ADMIN"]))])

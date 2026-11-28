@@ -191,7 +191,14 @@ def list_hotels(
         .skip(offset)
         .limit(limit)
     )
-    return {"items": [_serialize(d) for d in cursor], "total": total}
+    # The paged envelope is part of the platform-admin contract. Echoing the
+    # controls keeps the response self-describing without changing filtering.
+    return {
+        "items": [_serialize(d) for d in cursor],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.get("/hotels/{hotel_id}")
